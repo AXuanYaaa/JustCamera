@@ -2,7 +2,7 @@
 
 ## Working representation
 
-PH3 filters operate only on `RgbFloatFrame`:
+PH3/PH4 filters operate only on `RgbFloatFrame`:
 
 - sRGB/BT.709 primaries;
 - linear transfer function;
@@ -13,11 +13,11 @@ PH3 filters operate only on `RgbFloatFrame`:
 
 `ImageFrame` distinguishes encoded JPEG/DNG, RAW_SENSOR, YUV_420_888, RGBA_8888, RGB_F32, and
 RGBA_F32, and records bit depth, channel layout, color primaries, transfer, alpha semantics, row
-stride, and pixel stride. Only RGB_F32/RGBA_F32 explicitly marked linear sRGB can enter PH3.
+stride, and pixel stride. Only RGB_F32/RGBA_F32 explicitly marked linear sRGB can enter PH4.
 
 ```text
 encoded JPEG / YUV / developed RAW
-    ↓ explicit decoder + color conversion (integration outside PH3)
+    ↓ explicit decoder + color conversion (integration outside PH4)
 linear-sRGB RgbFloatFrame
     ↓ exposure → tonal/color adjustments
     ↓ linear-to-sRGB transfer
@@ -26,7 +26,7 @@ encoded-sRGB 3D LUT + strength blend
 linear-sRGB output → future encoder/render adapter
 ```
 
-RAW_SENSOR is mosaic sensor data, not RGB. PH3 performs no demosaic, camera matrix, sensor white
+RAW_SENSOR is mosaic sensor data, not RGB. PH4 performs no demosaic, camera matrix, sensor white
 balance, or RAW tone mapping. DNG remains an archival sensor-domain output.
 
 ## Reference formulas
@@ -42,5 +42,10 @@ balance, or RAW tone mapping. DNG remains an archival sensor-domain output.
 - Built-in adjustment `strength` blends original and adjusted channels in linear sRGB.
 
 Intermediate invalid values are never propagated; inputs are validated and each output channel is
-finite-clamped to `[0, 1]`. Later PH4 native/SIMD implementations must match these reference tests
-or explicitly version a different algorithm.
+finite-clamped to `[0, 1]`. PH4 scalar C++ uses the same constants, thresholds, encoded-sRGB LUT
+blend, R-fast/G-next/B-slowest indexing, and straight-alpha preservation. JVM/device parity uses an
+absolute tolerance of `2e-5`; standalone core tests use `1e-5`. Any later SIMD implementation must
+pass the same oracle vectors or explicitly version a deliberate formula change.
+
+PH4 does not reinterpret this display-referred bounded frame as scene-linear or HDR. PH5 must add a
+distinct representation for wider range rather than changing these semantics in place.

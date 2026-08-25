@@ -47,15 +47,21 @@ rotation, and an array of planes. Each plane declares data byte size, row stride
 Formats currently reserve identifiers for YUV 4:2:0 888, RAW sensor 16-bit containers, RGBA 8888,
 and linear RGB 16F. A plugin rejects unsupported combinations instead of guessing layout.
 
-## PH3 filter-system mapping
+## PH4 filter-system mapping
 
 A future native FILTER adapter can expose a plugin as the same logical `ImageFilter` registered by
 stable ID, translate the descriptor's typed parameters into versioned `encoded_data`, and map the
-PREVIEW/FINAL_CAPTURE context to host scheduling policy. PH3's correctness frame is packed linear
+PREVIEW/FINAL_CAPTURE context to host scheduling policy. PH4's correctness frame is packed linear
 sRGB 32-bit float, while ABI v1 reserves linear RGB 16F. An adapter must perform an explicit,
 tested 32F↔16F conversion; it must never reinterpret the buffer. This is a compatible adapter
-boundary, so PH3 does not revise API 1.0. A direct RGB32F enum would require a future versioned ABI
+boundary, so PH4 does not revise API 1.0. A direct RGB32F enum would require a future versioned ABI
 extension if profiling shows the conversion is inappropriate.
+
+The PH4 built-in processing protocol is intentionally separate from this ABI. Built-ins are linked
+into `libjustcamera_native`, accept only validated linear-sRGB Float32 RGB/RGBA direct buffers, and
+use compact internal operation records. They are not discovered with `dlopen`/`dlsym`. Similar
+format/stride/color concepts ease a future adapter, but neither internal C++ structs nor JNI record
+layouts are promised to external plugins.
 
 ## Ownership and lifetime
 

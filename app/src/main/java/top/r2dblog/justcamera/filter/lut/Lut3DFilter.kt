@@ -10,6 +10,9 @@ import top.r2dblog.justcamera.filter.model.FilterDescriptor
 import top.r2dblog.justcamera.filter.model.FilterExecutionMode
 import top.r2dblog.justcamera.filter.model.FilterImplementationType
 import top.r2dblog.justcamera.filter.model.FilterParameters
+import top.r2dblog.justcamera.filter.processing.backend.NativeFilterOperation
+import top.r2dblog.justcamera.filter.processing.backend.NativeOperationProvider
+import top.r2dblog.justcamera.filter.processing.backend.NativeOperationType
 import top.r2dblog.justcamera.imaging.color.ColorTransfer
 import top.r2dblog.justcamera.imaging.frame.RgbFloatFrame
 
@@ -18,14 +21,20 @@ class Lut3DFilter(
     id: String,
     displayName: String,
     private val lut: Lut3D,
-) : ImageFilter {
+) : ImageFilter, NativeOperationProvider {
     override val descriptor = FilterDescriptor(
         id = id,
         displayName = displayName,
         category = FilterCategory.LUT,
-        implementationType = FilterImplementationType.KOTLIN_CPU_REFERENCE,
+        implementationType = FilterImplementationType.NATIVE_BUILTIN,
         supportedModes = FilterExecutionMode.entries.toSet(),
         parameterSpecs = listOf(AdjustmentParameters.strength),
+    )
+
+    override fun nativeOperation(parameters: FilterParameters) = NativeFilterOperation(
+        type = NativeOperationType.LUT_3D,
+        strength = parameters.float("strength", 1f),
+        lut = lut,
     )
 
     override suspend fun process(

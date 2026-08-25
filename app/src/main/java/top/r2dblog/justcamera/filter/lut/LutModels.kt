@@ -1,5 +1,6 @@
 package top.r2dblog.justcamera.filter.lut
 
+import java.nio.FloatBuffer
 import kotlin.math.floor
 
 data class LutDomain(val red: Float, val green: Float, val blue: Float) {
@@ -113,6 +114,13 @@ class Lut3D(
     }
 
     fun samplesCopy(): FloatArray = values.copyOf()
+
+    internal fun copySamplesTo(destination: FloatBuffer) {
+        require(destination.remaining() >= values.size) { "Destination LUT buffer is too small" }
+        destination.put(values)
+    }
+
+    internal val sampleCount: Int get() = values.size
 
     private fun value(red: Int, green: Int, blue: Int, channel: Int): Float =
         values[(((blue * size + green) * size + red) * 3) + channel]

@@ -1,6 +1,6 @@
 # Architecture
 
-## PH3 shape
+## PH4 shape
 
 JustCamera starts as one Android application module. Boundaries are packages with concrete
 behavior rather than empty Gradle modules; each top-level boundary can later move to a separate
@@ -23,6 +23,10 @@ RGB working frame
 ProcessingPipeline → FilterEngine → ordered FilterChain
                          ↓
         registry + built-ins + LUT + presets
+                         ↓ compatible operation runs
+              Processing backend selection
+                  ├─ PH3 Kotlin oracle
+                  └─ direct buffers → JNI → C++ scalar core
 
 Future decoded JPEG/YUV/developed RAW adapter
     ↓ explicit owned RGB conversion
@@ -51,12 +55,18 @@ private-storage `.so`
    `StillCaptureCoordinator` owns capture token/generation, expected outputs, pairing, timeout,
    partial completion, RAW leases, and save-job lifecycle; callbacks never perform disk I/O.
 6. `imaging` and `filter` do not depend on Compose or Camera2. Android `Image` closes at the camera
-   boundary. PH3 filters accept only immutable normalized linear-sRGB `RgbFloatFrame`; RAW, YUV,
+   boundary. PH3/PH4 filters accept only immutable normalized linear-sRGB `RgbFloatFrame`; RAW, YUV,
    JPEG, and DNG require an explicit future conversion adapter. `FilterEngine.processingNode()` is
    the single bridge into the original pipeline.
 7. `plugin/host` depends on descriptors and the stable API version, never on a concrete plugin.
    External loading stays disabled until its trust/install model is implemented.
-8. Kotlin calls native code through `nativecore`. C plugins expose only the documented C ABI.
+8. `FilterEngine` remains the processing orchestrator. Compatible filters provide a small native
+   operation description; the selected backend executes a whole compatible run or invokes the
+   same filter's PH3 Kotlin implementation. UI and pipeline callers see one stable filter ID and
+   parameter schema regardless of backend.
+9. Kotlin calls the built-in C++ core through a narrow internal JNI/direct-buffer boundary.
+   `nativecore` owns load/version/capability diagnostics. This protocol is not the C plugin ABI,
+   and built-ins are linked normally rather than routed through `dlopen`.
 
 ## State and errors
 
@@ -76,10 +86,10 @@ resources have been closed; a recoverable Error is therefore also a valid source
 - **Image acquisition thread (`JustCamera-ImageAcquire`):** acquires JPEG/RAW outputs. JPEG bytes
   are copied promptly; a paired RAW `Image` transfers to the DNG writer. No storage I/O runs here.
 - **I/O dispatcher:** MediaStore insert/write/finalization and `DngCreator.writeImage`.
-- **Processing dispatcher:** PH3 filter-chain validation and CPU reference pixel loops.
-- **Future processing worker:** RAW/YUV conversion, HDR and multi-frame pipeline work.
-- **Future native worker:** CPU-intensive C++ processing. JNI calls must not occupy the camera
-  callback thread.
+- **Processing dispatcher:** filter-chain validation, Kotlin reference loops, direct-buffer
+  preparation, and synchronous native processing. It never runs on the UI or camera thread.
+- **Future processing work:** RAW/YUV conversion, HDR and multi-frame stages use distinct owned
+  representations and must not silently widen the PH3/PH4 display-referred contract.
 
 This separation keeps Camera2 callback latency independent from storage and future processing.
 
@@ -112,3 +122,11 @@ preserve RAW through normal retry. Switching away and back creates a new tenure 
 Already-started MediaStore saves finish safely across switch, stop, error recovery, and engine
 release. The coordinator accepts no new jobs after release and cancels its scope only after all
 started jobs complete, ensuring every pending MediaStore row is published or cleaned up.
+
+PH4 processing has a separate call-scoped ownership rule. Kotlin owns the immutable source frame
+and allocates one native-order direct working buffer plus optional flattened validated LUT data for
+each fused native run. JNI borrows their addresses only until the call returns; C++ retains no
+pointer, handle, LUT, scratch buffer, or mutable global state. C++ mutates only the owned working
+copy, so failure leaves the source frame intact for Kotlin fallback. Direct-buffer backing storage
+is VM-owned; no C++ allocation/release API crosses JNI. Local C++ vectors use RAII and all
+exceptions are caught before returning a status.

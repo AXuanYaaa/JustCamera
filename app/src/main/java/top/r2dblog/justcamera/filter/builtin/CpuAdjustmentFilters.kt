@@ -10,6 +10,9 @@ import top.r2dblog.justcamera.filter.model.FilterExecutionMode
 import top.r2dblog.justcamera.filter.model.FilterImplementationType
 import top.r2dblog.justcamera.filter.model.FilterParameterSpec
 import top.r2dblog.justcamera.filter.model.FilterParameters
+import top.r2dblog.justcamera.filter.processing.backend.NativeFilterOperation
+import top.r2dblog.justcamera.filter.processing.backend.NativeOperationProvider
+import top.r2dblog.justcamera.filter.processing.backend.NativeOperationType
 import top.r2dblog.justcamera.imaging.frame.RgbFloatFrame
 import kotlin.math.pow
 import kotlin.math.sqrt
@@ -81,9 +84,19 @@ abstract class CpuRgbFilter(
     protected fun clamp(value: Float): Float = if (value.isFinite()) value.coerceIn(0f, 1f) else 0f
 }
 
-class ExposureFilter : CpuRgbFilter(adjustmentDescriptor("builtin.exposure", "Exposure", AdjustmentParameters.exposure)) {
+class ExposureFilter : CpuRgbFilter(
+    adjustmentDescriptor("builtin.exposure", "Exposure", AdjustmentParameters.exposure).copy(
+        implementationType = FilterImplementationType.NATIVE_BUILTIN,
+    ),
+), NativeOperationProvider {
     override fun prepare(parameters: FilterParameters) = floatArrayOf(
         2.0.pow(parameters.float("exposure").toDouble()).toFloat(),
+    )
+
+    override fun nativeOperation(parameters: FilterParameters) = NativeFilterOperation(
+        type = NativeOperationType.EXPOSURE,
+        parameter = parameters.float("exposure"),
+        strength = parameters.float("strength", 1f),
     )
 
     override fun transform(pixels: FloatArray, offset: Int, prepared: FloatArray, pixelIndex: Int, frame: RgbFloatFrame) {
@@ -92,8 +105,18 @@ class ExposureFilter : CpuRgbFilter(adjustmentDescriptor("builtin.exposure", "Ex
     }
 }
 
-class ContrastFilter : CpuRgbFilter(adjustmentDescriptor("builtin.contrast", "Contrast", AdjustmentParameters.contrast)) {
+class ContrastFilter : CpuRgbFilter(
+    adjustmentDescriptor("builtin.contrast", "Contrast", AdjustmentParameters.contrast).copy(
+        implementationType = FilterImplementationType.NATIVE_BUILTIN,
+    ),
+), NativeOperationProvider {
     override fun prepare(parameters: FilterParameters) = floatArrayOf(parameters.float("contrast", 1f))
+
+    override fun nativeOperation(parameters: FilterParameters) = NativeFilterOperation(
+        type = NativeOperationType.CONTRAST,
+        parameter = parameters.float("contrast", 1f),
+        strength = parameters.float("strength", 1f),
+    )
 
     override fun transform(pixels: FloatArray, offset: Int, prepared: FloatArray, pixelIndex: Int, frame: RgbFloatFrame) {
         val contrast = prepared[0]
@@ -105,8 +128,18 @@ class ContrastFilter : CpuRgbFilter(adjustmentDescriptor("builtin.contrast", "Co
     private companion object { const val CONTRAST_PIVOT = 0.18f }
 }
 
-class SaturationFilter : CpuRgbFilter(adjustmentDescriptor("builtin.saturation", "Saturation", AdjustmentParameters.saturation)) {
+class SaturationFilter : CpuRgbFilter(
+    adjustmentDescriptor("builtin.saturation", "Saturation", AdjustmentParameters.saturation).copy(
+        implementationType = FilterImplementationType.NATIVE_BUILTIN,
+    ),
+), NativeOperationProvider {
     override fun prepare(parameters: FilterParameters) = floatArrayOf(parameters.float("saturation", 1f))
+
+    override fun nativeOperation(parameters: FilterParameters) = NativeFilterOperation(
+        type = NativeOperationType.SATURATION,
+        parameter = parameters.float("saturation", 1f),
+        strength = parameters.float("strength", 1f),
+    )
 
     override fun transform(pixels: FloatArray, offset: Int, prepared: FloatArray, pixelIndex: Int, frame: RgbFloatFrame) {
         val saturation = prepared[0]

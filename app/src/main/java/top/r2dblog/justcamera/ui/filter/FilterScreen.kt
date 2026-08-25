@@ -34,12 +34,14 @@ import top.r2dblog.justcamera.filter.model.FilterDescriptor
 import top.r2dblog.justcamera.filter.model.FilterParameterSpec
 import top.r2dblog.justcamera.filter.model.FilterParameterValue
 import top.r2dblog.justcamera.filter.model.FilterParameters
+import top.r2dblog.justcamera.nativecore.NativeCore
 import java.util.Locale
 import kotlin.math.roundToInt
 
 @Composable
 fun FilterScreen(onBack: () -> Unit) {
     val descriptors = remember { BuiltInFilterCatalog.registry().descriptors() }
+    val nativeCapabilities = remember { NativeCore.capabilities() }
     var selected by remember { mutableStateOf(descriptors.first()) }
     var parameters by remember(selected.id) {
         mutableStateOf(FilterParameters.defaults(selected))
@@ -61,7 +63,7 @@ fun FilterScreen(onBack: () -> Unit) {
             Column {
                 Text("Filter Engine", color = Color.White, style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "PREVIEW configuration · CPU sample/final API",
+                    "PREVIEW configuration · AUTO backend",
                     color = Color.White.copy(alpha = 0.62f),
                 )
             }
@@ -69,9 +71,18 @@ fun FilterScreen(onBack: () -> Unit) {
         }
         Spacer(Modifier.height(14.dp))
         Text(
-            "The live TextureView is not pixel-filtered in PH3. Controls configure the shared " +
-                "filter model; realtime rendering remains a later accelerated integration.",
+            "The live TextureView is not pixel-filtered in PH4. Controls configure the shared " +
+                "filter model; native scalar processing accelerates compatible offline chains.",
             color = Color(0xFFFFC66D),
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            nativeCapabilities?.let {
+                "Native: ${it.processingVersion} · ${it.abi} · " +
+                    if (it.neonAvailable) "NEON available / scalar kernels" else "scalar kernels"
+            } ?: "Native: unavailable · AUTO uses Kotlin reference",
+            color = Color.White.copy(alpha = 0.62f),
             style = MaterialTheme.typography.bodySmall,
         )
         Spacer(Modifier.height(18.dp))

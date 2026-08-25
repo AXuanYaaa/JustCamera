@@ -1,12 +1,12 @@
 # JustCamera
 
 JustCamera is an Android Camera2 foundation for a long-lived professional camera and
-computational-photography platform. The repository is currently at **PH3 — Filter Engine + LUT
-Foundation**. It is not yet a replacement for a production system camera.
+computational-photography platform. The repository is currently at **PH4 — Native Image
+Processing Foundation**. It is not yet a replacement for a production system camera.
 
 ## Current status
 
-PH3 provides:
+PH4 provides:
 
 - runtime camera permission integration and Android 8–9 legacy MediaStore permission;
 - Camera2 discovery with a project-owned capability model;
@@ -24,18 +24,24 @@ PH3 provides:
   execution modes, versioned presets, and five small built-in reference looks;
 - CPU reference exposure, contrast, saturation, temperature/tint, highlights/shadows, fade,
   vignette, and cancellation-aware processing;
+- a C++20 scalar processing core for exposure, contrast, saturation, color transfer, and 3D LUTs
+  that preserves the PH3 numerical contract;
+- a narrow validated JNI boundary using call-scoped direct buffers, fused compatible operation
+  runs, explicit status codes, AUTO/Kotlin/native selection, and deterministic Kotlin fallback;
+- native version/ABI/NEON capability diagnostics without claiming an active SIMD kernel;
 - validated compact 1D/3D LUT models, strict `.cube` parsing, trilinear interpolation, and encoded
   sRGB LUT strength blending;
 - a descriptor-driven filter configuration UI that explicitly does not claim live pixel rendering;
-- a real C++ JNI native-core version call;
+- pure C++ algorithm tests, JVM backend/fallback tests, and device-side JNI parity test sources;
 - a versioned C plugin ABI, registry, validation loader foundation, and a deliberately disabled
   external plugin install path;
 - host-side unit tests for control validation/math, zoom/metering, RAW policy, DNG pairing,
   capability mapping, state, geometry, pipeline, filter, and ABI logic.
 
-PH3 does **not** provide sensor white-balance color science, RAW development/demosaic, Camera2 live
+PH4 does **not** provide sensor white-balance color science, RAW development/demosaic, Camera2 live
 filter rendering, automatic captured-JPEG recompression, HDR, night mode, denoise, super resolution,
-external plugin installation, native filter kernels, or GPU processing. Those remain later phases.
+external plugin installation, active hand-written NEON kernels, or GPU processing. Those remain
+later phases.
 
 ## Technology and Android versions
 
@@ -71,15 +77,18 @@ The project intentionally uses one Gradle `app` module with module-ready package
 ui → camera/application → camera/device → Camera2
                    ↘ camera/control + camera/capability
                    ↘ camera/raw + camera/capture → DngCreator + MediaStore
-filter/api + registry + builtin + lut + preset → imaging/frame + imaging/pipeline
+filter/api + registry + builtin + lut + preset → FilterEngine → backend selection
+                                                       ├─ PH3 Kotlin oracle
+                                                       └─ direct buffers → JNI → C++ scalar core
 plugin/host → plugin/api + plugin/model → native C ABI
-nativecore → JNI → C++
+nativecore → JNI diagnostics
 ```
 
 Android framework types stop at platform adapters. UI reads `CameraCapabilities`, never
 `CameraCharacteristics`; processing reads `ImageFrame`, never retains `android.media.Image`.
 See [Architecture](docs/ARCHITECTURE.md), [Filter engine](docs/FILTER_ENGINE.md),
-[Color pipeline](docs/COLOR_PIPELINE.md), and [LUT format](docs/LUT_FORMAT.md).
+[Color pipeline](docs/COLOR_PIPELINE.md), [Native processing](docs/NATIVE_PROCESSING.md), and
+[LUT format](docs/LUT_FORMAT.md).
 
 ## Roadmap
 

@@ -2,6 +2,7 @@ package top.r2dblog.justcamera.filter.processing
 
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import top.r2dblog.justcamera.filter.api.FilterExecutionContext
@@ -10,6 +11,13 @@ import top.r2dblog.justcamera.filter.model.FilterChain
 import top.r2dblog.justcamera.filter.model.FilterExecutionMode
 import top.r2dblog.justcamera.filter.model.FilterParameters
 import top.r2dblog.justcamera.filter.model.FilterValidationIssue
+import top.r2dblog.justcamera.filter.processing.backend.NativeBackendResult
+import top.r2dblog.justcamera.filter.processing.backend.NativeFilterOperation
+import top.r2dblog.justcamera.filter.processing.backend.NativeOperationProvider
+import top.r2dblog.justcamera.filter.processing.backend.NativeProcessingBackend
+import top.r2dblog.justcamera.filter.processing.backend.ProcessingBackendEvent
+import top.r2dblog.justcamera.filter.processing.backend.ProcessingBackendKind
+import top.r2dblog.justcamera.filter.processing.backend.ProcessingBackendSelection
 import top.r2dblog.justcamera.filter.registry.FilterRegistry
 import top.r2dblog.justcamera.imaging.frame.FrameMetadataValue
 import top.r2dblog.justcamera.imaging.frame.ImageFrame
@@ -28,6 +36,7 @@ data class FilterProcessingResult(
     val output: RgbFloatFrame,
     val issues: List<FilterChainIssue>,
     val appliedFilterIds: List<String>,
+    val backendEvents: List<ProcessingBackendEvent> = emptyList(),
 )
 
 internal data class ResolvedFilterOperation(
@@ -79,10 +88,15 @@ class FilterChainValidator(private val registry: FilterRegistry) {
         FilterChainIssue(index, message, isError)
 }
 
-/** CPU correctness engine. Work is dispatched off UI/camera threads and remains cancellable. */
+/**
+ * Top-level PH3 filter orchestrator. Compatible operation runs may use one PH4 native call;
+ * every failure retains the PH3 Kotlin filters as the correctness fallback.
+ */
 class FilterEngine(
     private val registry: FilterRegistry,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
+    val backendSelection: ProcessingBackendSelection = ProcessingBackendSelection.AUTO,
+    private val nativeBackend: NativeProcessingBackend = NativeProcessingBackend(),
 ) {
     private val validator = FilterChainValidator(registry)
 
@@ -92,16 +106,86 @@ class FilterEngine(
         context: FilterExecutionContext,
     ): FilterProcessingResult = withContext(dispatcher) {
         val resolved = validator.resolve(chain, context.mode)
+        val issues = resolved.issues.toMutableList()
         val applied = mutableListOf<String>()
+        val backendEvents = mutableListOf<ProcessingBackendEvent>()
+        val pendingNative = mutableListOf<Pair<ResolvedFilterOperation, NativeFilterOperation>>()
         var current = input
-        resolved.operations.forEach { operation ->
-            ensureActive()
-            if (operation.enabled) {
+
+        suspend fun runKotlin(operations: List<ResolvedFilterOperation>, reason: String) {
+            operations.forEach { operation ->
+                currentCoroutineContext().ensureActive()
                 current = operation.filter.process(current, operation.parameters, context)
                 applied += operation.filter.descriptor.id
             }
+            if (operations.isNotEmpty()) {
+                backendEvents += ProcessingBackendEvent(
+                    filterIds = operations.map { it.filter.descriptor.id },
+                    backend = ProcessingBackendKind.KOTLIN_REFERENCE,
+                    message = reason,
+                )
+            }
         }
-        FilterProcessingResult(current, resolved.issues, applied)
+
+        suspend fun flushNativeRun() {
+            if (pendingNative.isEmpty()) return
+            val run = pendingNative.toList()
+            pendingNative.clear()
+            val resolvedRun = run.map { it.first }
+            val ids = resolvedRun.map { it.filter.descriptor.id }
+            currentCoroutineContext().ensureActive()
+            when (val result = nativeBackend.process(current, run.map { it.second })) {
+                is NativeBackendResult.Success -> {
+                    current = result.output
+                    applied += ids
+                    backendEvents += ProcessingBackendEvent(
+                        ids,
+                        ProcessingBackendKind.NATIVE_SCALAR,
+                        "Fused native scalar operation run",
+                    )
+                }
+                is NativeBackendResult.Unavailable -> {
+                    val explicitNative = backendSelection == ProcessingBackendSelection.NATIVE
+                    if (explicitNative) {
+                        issues += FilterChainIssue(
+                            run.first().first.index,
+                            "Native backend unavailable: ${result.message}; Kotlin reference fallback used",
+                            isError = false,
+                        )
+                    }
+                    runKotlin(
+                        resolvedRun,
+                        "Kotlin reference fallback: native backend unavailable",
+                    )
+                }
+                is NativeBackendResult.Failure -> {
+                    val fallbackMessage =
+                        "${result.message}; Kotlin reference fallback used for ${ids.joinToString()}"
+                    issues += FilterChainIssue(
+                        run.first().first.index,
+                        fallbackMessage,
+                        isError = !result.status.recoverable,
+                    )
+                    nativeBackend.recordFallback(fallbackMessage)
+                    runKotlin(resolvedRun, "Kotlin reference fallback after ${result.status.name}")
+                }
+            }
+            currentCoroutineContext().ensureActive()
+        }
+
+        resolved.operations.forEach { operation ->
+            currentCoroutineContext().ensureActive()
+            if (!operation.enabled) return@forEach
+            val provider = operation.filter as? NativeOperationProvider
+            if (backendSelection != ProcessingBackendSelection.KOTLIN_REFERENCE && provider != null) {
+                pendingNative += operation to provider.nativeOperation(operation.parameters)
+            } else {
+                flushNativeRun()
+                runKotlin(listOf(operation), "Kotlin reference backend selected")
+            }
+        }
+        flushNativeRun()
+        FilterProcessingResult(current, issues, applied, backendEvents)
     }
 
     fun processingNode(chain: FilterChain): ProcessingNode = ProcessingNode { input, context ->

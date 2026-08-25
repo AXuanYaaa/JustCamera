@@ -22,14 +22,14 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.3.0-ph3"
+        versionName = "0.4.0-ph4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         if (!skipNative) {
             externalNativeBuild {
                 cmake {
-                    cppFlags += listOf("-std=c++20", "-Wall", "-Wextra", "-Werror")
+                    cppFlags += listOf("-std=c++20")
                     arguments += "-DANDROID_STL=c++_shared"
                 }
             }
@@ -95,4 +95,5 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

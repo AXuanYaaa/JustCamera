@@ -1,6 +1,6 @@
 # Camera and Processing Pipeline
 
-## Camera capture path (unchanged by PH3)
+## Camera capture path (unchanged by PH4)
 
 ```text
 Camera2 device
@@ -31,20 +31,27 @@ writer, then is closed deterministically. `DngCreator` receives the matching cha
 tracks each output independently, so one successful file plus one failure becomes
 `PartialSuccess`. Missing outputs expire after a bounded timeout.
 
-## PH3 processing path
+## PH4 processing path
 
 ```text
 decoded/converted RGB_F32 ImageFrame
     ↓ existing ProcessingPipeline
 FilterEngine ProcessingNode
     ↓ validated ordered FilterChain on processing dispatcher
+    ↓ AUTO / KOTLIN_REFERENCE / NATIVE selection
+    ├─ PH3 Kotlin reference filters
+    └─ one direct-buffer JNI call per compatible run
 linear-sRGB ImageFrame
 ```
 
 `ImageFrame` now also records bit depth, channel layout, primaries, transfer, and alpha semantics.
 The filter adapter rejects RAW, YUV, encoded JPEG/DNG, and ambiguous RGB. Only packed normalized
 RGB_F32/RGBA_F32 declared as linear sRGB is accepted. PREVIEW and FINAL_CAPTURE use one filter API.
-The CPU implementation is deterministic, sequential, suspendable, and runs off UI/camera threads.
+The Kotlin implementation remains the deterministic oracle. PH4 can fuse adjacent native-capable
+exposure, contrast, saturation, and 3D LUT operations into one synchronous C++ scalar call. The
+input is copied once into an internally mutable direct buffer and copied once into a new immutable
+output frame. Unsupported filters split runs and execute in declaration order through Kotlin.
+Recoverable native failure discards the working copy and reruns that run with the Kotlin oracle.
 
 ## Future capture/preview integration (not implemented)
 
@@ -55,17 +62,17 @@ owned native/image buffer
     ↓
 input conversion / demosaic / white balance
     ↓
-denoise / HDR / multi-frame fusion
+future denoise / HDR / multi-frame fusion using a distinct scene-linear representation
     ↓
 color science / tone mapping
     ↓
-PH3 FilterEngine node
+PH4 FilterEngine node
     ↓
 encoder
     ↓
 MediaStore
 ```
 
-Each future stage must execute on a processing/native worker and carry metadata explicitly. PH3
+Each future stage must execute on a processing/native worker and carry metadata explicitly. PH4
 does not intercept current JPEG saves, filter the live `TextureView`, or alter DNG. A future JPEG/YUV
 decoder or RAW developer must produce the declared RGB working frame before calling FilterEngine.

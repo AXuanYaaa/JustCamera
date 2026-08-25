@@ -2,6 +2,7 @@ package top.r2dblog.justcamera.imaging.frame
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.FloatBuffer
 
 enum class RgbChannelLayout(val channelCount: Int) { RGB(3), RGBA(4) }
 
@@ -51,6 +52,12 @@ class RgbFloatFrame private constructor(
     }
 
     fun copyPixels(): FloatArray = pixels.copyOf()
+
+    /** Copies immutable samples into a caller-owned working buffer without an intermediate array. */
+    internal fun copyPixelsTo(destination: FloatBuffer) {
+        require(destination.remaining() >= pixels.size) { "Destination float buffer is too small" }
+        destination.put(pixels)
+    }
 
     internal fun withOwnedPixels(output: FloatArray): RgbFloatFrame = RgbFloatFrame(
         width = width,

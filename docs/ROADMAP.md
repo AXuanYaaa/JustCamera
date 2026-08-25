@@ -15,16 +15,19 @@ Capability-driven focus/exposure/ISO/white-balance/zoom/lock controls, shared pr
 request state, observed metadata, RAW/DNG capture, multi-output status, and bounded timestamp
 pairing. Real-device preview, HAL control, and DNG validation remain required validation debt.
 
-## PH3 — Filter Engine + LUT (current)
+## PH3 — Filter Engine + LUT (complete)
 
 Linear-sRGB working frames, preview/final filter contract, typed parameters, registry, ordered
 chains, versioned presets, CPU adjustment references, compact 1D/3D LUTs, strict `.cube` parsing,
 trilinear interpolation, pipeline adapter, and schema-generated configuration UI. Live Camera2
 pixel rendering and captured-image encode integration remain explicit future adapters.
 
-## PH4 — Native Image Processing
+## PH4 — Native Image Processing (current)
 
-Owned native buffers, JNI lifecycle, SIMD kernels, benchmarks, and deterministic fallback paths.
+C++20 scalar exposure/contrast/saturation/color-transfer/3D-LUT kernels, validated direct-buffer
+JNI, fused compatible runs, AUTO/Kotlin/native selection, deterministic Kotlin fallback, native
+diagnostics, parity tests, benchmark harness, and NEON capability groundwork. Hand-written SIMD,
+GPU processing, and scene-linear/HDR data remain later work.
 
 ## PH5 — HDR
 
