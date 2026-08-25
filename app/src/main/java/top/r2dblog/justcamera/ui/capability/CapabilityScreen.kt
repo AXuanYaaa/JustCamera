@@ -109,6 +109,12 @@ private fun CapabilityList(camera: CameraCapabilities, modifier: Modifier = Modi
             }.orMissing(),
         )
         add("Max frame duration" to camera.maxFrameDurationNanos?.let(::formatNanos).orMissing())
+        add(
+            "AE compensation" to camera.aeCompensationRange?.let { range ->
+                val step = camera.aeCompensationStep?.value
+                "${range.lower}–${range.upper} steps · ${step ?: "unknown"} EV/step"
+            }.orMissing(),
+        )
         add("Minimum focus distance" to camera.minimumFocusDistanceDiopters?.let {
             "$it D"
         }.orMissing())
@@ -119,6 +125,7 @@ private fun CapabilityList(camera: CameraCapabilities, modifier: Modifier = Modi
         add("AWB modes" to camera.awbModes.joinToString().ifBlank { "Not reported" })
         add("FPS ranges" to camera.targetFpsRanges.joinToString().ifBlank { "Not reported" })
         add("RAW" to camera.supports(CameraCapability.RAW))
+        add("Usable RAW output" to yesNo(camera.supportsRaw))
         add("Manual sensor" to camera.supports(CameraCapability.MANUAL_SENSOR))
         add("Manual post processing" to camera.supports(CameraCapability.MANUAL_POST_PROCESSING))
         add("Burst" to camera.supports(CameraCapability.BURST_CAPTURE))
@@ -134,6 +141,16 @@ private fun CapabilityList(camera: CameraCapabilities, modifier: Modifier = Modi
         add("Optical stabilization" to yesNo(camera.opticalStabilization))
         add("Video stabilization" to yesNo(camera.videoStabilization))
         add("Max digital zoom" to "${camera.maxDigitalZoom}×")
+        add(
+            "Zoom ratio range" to camera.zoomRatioRange?.let {
+                "${it.lower}–${it.upper}×"
+            }.orMissing(),
+        )
+        add("AE lock" to yesNo(camera.aeLockAvailable))
+        add("AWB lock" to yesNo(camera.awbLockAvailable))
+        add("Metering regions AF/AE/AWB" to
+            "${camera.maxAfMeteringRegions}/${camera.maxAeMeteringRegions}/" +
+                camera.maxAwbMeteringRegions)
         camera.outputs.forEach { output ->
             add(
                 "Output ${output.format}" to output.sizes.joinToString(limit = 8).ifBlank {

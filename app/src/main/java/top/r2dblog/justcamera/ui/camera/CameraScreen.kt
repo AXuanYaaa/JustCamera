@@ -49,6 +49,10 @@ fun CameraScreen(
     val cameras by cameraController.cameras.collectAsState()
     val selectedCamera by cameraController.selectedCamera.collectAsState()
     val previewSize by cameraController.previewSize.collectAsState()
+    val controlState by cameraController.controlState.collectAsState()
+    val controlCapabilities by cameraController.controlCapabilities.collectAsState()
+    val captureMetadata by cameraController.captureMetadata.collectAsState()
+    val controlError by cameraController.controlError.collectAsState()
     val nativeVersion = remember {
         runCatching(NativeCore::version).getOrElse { "Native core unavailable" }
     }
@@ -113,6 +117,14 @@ fun CameraScreen(
                 .padding(horizontal = 24.dp, vertical = 18.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            ProControlPanel(
+                state = controlState,
+                capabilities = controlCapabilities,
+                metadata = captureMetadata,
+                controlError = controlError,
+                onStateChange = cameraController::updateControls,
+            )
+            Spacer(Modifier.height(8.dp))
             CaptureMessage(captureStatus)
             Spacer(Modifier.height(12.dp))
             Row(
@@ -126,7 +138,7 @@ fun CameraScreen(
                     onClick = openCapabilities,
                 )
                 Button(
-                    onClick = cameraController::captureJpeg,
+                    onClick = cameraController::capture,
                     enabled = state is CameraState.Previewing && storagePermissionGranted &&
                         captureStatus !is CaptureStatus.Capturing &&
                         captureStatus !is CaptureStatus.Saving,
@@ -205,13 +217,16 @@ private fun CameraActionButton(text: String, enabled: Boolean, onClick: () -> Un
 @Composable
 private fun CaptureMessage(status: CaptureStatus) {
     val message = when (status) {
-        CaptureStatus.Idle -> "JPEG · MediaStore"
-        CaptureStatus.Capturing -> "Capturing…"
-        CaptureStatus.Saving -> "Saving…"
-        is CaptureStatus.Saved -> "Saved ${status.displayName}"
+        CaptureStatus.Idle -> "Ready · MediaStore"
+        is CaptureStatus.Capturing -> "Capturing ${status.mode}…"
+        is CaptureStatus.Saving -> "Saving ${status.pending.joinToString()}…"
+        is CaptureStatus.Saved -> "Saved ${status.outputs.joinToString { it.displayName }}"
+        is CaptureStatus.PartialSuccess ->
+            "Partial · saved ${status.outputs.joinToString { it.type.name }}; " +
+                "failed ${status.failures.joinToString { it.type.name }}"
         is CaptureStatus.Failed -> status.error.message
     }
-    val color = if (status is CaptureStatus.Failed) {
+    val color = if (status is CaptureStatus.Failed || status is CaptureStatus.PartialSuccess) {
         MaterialTheme.colorScheme.error
     } else {
         Color.White.copy(alpha = 0.78f)

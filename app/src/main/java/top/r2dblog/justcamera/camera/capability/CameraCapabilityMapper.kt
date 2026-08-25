@@ -13,6 +13,9 @@ import top.r2dblog.justcamera.camera.model.ImageSize
 import top.r2dblog.justcamera.camera.model.SensorRect
 import top.r2dblog.justcamera.camera.model.SupportedOutput
 import top.r2dblog.justcamera.camera.model.ValueRange
+import top.r2dblog.justcamera.camera.model.FocusMode
+import top.r2dblog.justcamera.camera.model.RationalValue
+import top.r2dblog.justcamera.camera.model.WhiteBalanceMode
 
 object CameraCapabilityMapper {
     fun map(cameraId: String, raw: RawCameraCharacteristics): CameraCapabilities =
@@ -30,14 +33,30 @@ object CameraCapabilityMapper {
                 ValueRange(it.lower, it.upper)
             },
             maxFrameDurationNanos = raw.maxFrameDuration,
+            aeCompensationRange = raw.aeCompensationRange?.let {
+                ValueRange(it.lower, it.upper)
+            },
+            aeCompensationStep = raw.aeCompensationStep?.let {
+                RationalValue(it.numerator, it.denominator)
+            },
             minimumFocusDistanceDiopters = raw.minimumFocusDistance,
             focalLengthsMm = raw.focalLengths,
             apertures = raw.apertures,
             afModes = raw.afModes.map(::afModeName),
+            focusModes = raw.afModes.mapNotNull(::mapFocusMode).filterTo(mutableSetOf()) {
+                it != FocusMode.MANUAL || (raw.minimumFocusDistance ?: 0f) > 0f
+            },
             aeModes = raw.aeModes.map(::aeModeName),
             awbModes = raw.awbModes.map(::awbModeName),
+            whiteBalanceModes = raw.awbModes.mapNotNull(::mapWhiteBalanceMode).toSet(),
             targetFpsRanges = raw.targetFpsRanges.map { FrameRateRange(it.lower, it.upper) },
             maxDigitalZoom = raw.maxDigitalZoom?.coerceAtLeast(1f) ?: 1f,
+            zoomRatioRange = raw.zoomRatioRange?.let { ValueRange(it.lower, it.upper) },
+            aeLockAvailable = raw.aeLockAvailable,
+            awbLockAvailable = raw.awbLockAvailable,
+            maxAfMeteringRegions = raw.maxAfMeteringRegions,
+            maxAeMeteringRegions = raw.maxAeMeteringRegions,
+            maxAwbMeteringRegions = raw.maxAwbMeteringRegions,
             capabilities = raw.requestCapabilities.mapNotNull(::mapCapability).toSet(),
             platformRequestCapabilities = raw.requestCapabilities,
             opticalStabilization = CameraMetadata.LENS_OPTICAL_STABILIZATION_MODE_ON in
@@ -109,6 +128,16 @@ object CameraCapabilityMapper {
         else -> "Unknown ($value)"
     }
 
+    private fun mapFocusMode(value: Int): FocusMode? = when (value) {
+        CameraMetadata.CONTROL_AF_MODE_OFF -> FocusMode.MANUAL
+        CameraMetadata.CONTROL_AF_MODE_AUTO -> FocusMode.AUTO
+        CameraMetadata.CONTROL_AF_MODE_MACRO -> FocusMode.MACRO
+        CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO -> FocusMode.CONTINUOUS_VIDEO
+        CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE -> FocusMode.CONTINUOUS_PICTURE
+        CameraMetadata.CONTROL_AF_MODE_EDOF -> FocusMode.EDOF
+        else -> null
+    }
+
     private fun aeModeName(value: Int): String = when (value) {
         CameraMetadata.CONTROL_AE_MODE_OFF -> "Off"
         CameraMetadata.CONTROL_AE_MODE_ON -> "On"
@@ -129,5 +158,17 @@ object CameraCapabilityMapper {
         CameraMetadata.CONTROL_AWB_MODE_TWILIGHT -> "Twilight"
         CameraMetadata.CONTROL_AWB_MODE_SHADE -> "Shade"
         else -> "Unknown ($value)"
+    }
+
+    private fun mapWhiteBalanceMode(value: Int): WhiteBalanceMode? = when (value) {
+        CameraMetadata.CONTROL_AWB_MODE_AUTO -> WhiteBalanceMode.AUTO
+        CameraMetadata.CONTROL_AWB_MODE_INCANDESCENT -> WhiteBalanceMode.INCANDESCENT
+        CameraMetadata.CONTROL_AWB_MODE_FLUORESCENT -> WhiteBalanceMode.FLUORESCENT
+        CameraMetadata.CONTROL_AWB_MODE_WARM_FLUORESCENT -> WhiteBalanceMode.WARM_FLUORESCENT
+        CameraMetadata.CONTROL_AWB_MODE_DAYLIGHT -> WhiteBalanceMode.DAYLIGHT
+        CameraMetadata.CONTROL_AWB_MODE_CLOUDY_DAYLIGHT -> WhiteBalanceMode.CLOUDY_DAYLIGHT
+        CameraMetadata.CONTROL_AWB_MODE_TWILIGHT -> WhiteBalanceMode.TWILIGHT
+        CameraMetadata.CONTROL_AWB_MODE_SHADE -> WhiteBalanceMode.SHADE
+        else -> null
     }
 }

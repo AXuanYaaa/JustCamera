@@ -10,6 +10,12 @@ enum class CameraErrorCode {
     STORAGE_FAILED,
     INVALID_SURFACE,
     UNSUPPORTED_CAPABILITY,
+    UNSUPPORTED_CONTROL,
+    INVALID_CONTROL_VALUE,
+    RAW_UNSUPPORTED,
+    RAW_CAPTURE_FAILED,
+    RAW_PAIRING_FAILED,
+    DNG_ENCODING_FAILED,
     UNKNOWN,
 }
 
@@ -82,8 +88,21 @@ object CameraStateReducer {
 
 sealed interface CaptureStatus {
     data object Idle : CaptureStatus
-    data object Capturing : CaptureStatus
-    data object Saving : CaptureStatus
-    data class Saved(val displayName: String) : CaptureStatus
+    data class Capturing(val mode: CaptureMode) : CaptureStatus
+    data class Saving(
+        val mode: CaptureMode,
+        val pending: Set<CaptureOutputType>,
+    ) : CaptureStatus
+    data class Saved(val outputs: List<CapturedOutput>) : CaptureStatus
+    data class PartialSuccess(
+        val outputs: List<CapturedOutput>,
+        val failures: List<CaptureOutputFailure>,
+    ) : CaptureStatus
     data class Failed(val error: CameraError) : CaptureStatus
 }
+
+enum class CaptureOutputType { JPEG, DNG }
+
+data class CapturedOutput(val type: CaptureOutputType, val displayName: String)
+
+data class CaptureOutputFailure(val type: CaptureOutputType, val error: CameraError)

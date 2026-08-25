@@ -77,6 +77,12 @@ class CameraCapabilityScanner(private val cameraManager: CameraManager) {
                 RawLongRange(it.lower, it.upper)
             },
             maxFrameDuration = get(CameraCharacteristics.SENSOR_INFO_MAX_FRAME_DURATION),
+            aeCompensationRange = get(
+                CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE,
+            )?.let { RawIntRange(it.lower, it.upper) },
+            aeCompensationStep = get(
+                CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP,
+            )?.let { RawRational(it.numerator, it.denominator) },
             minimumFocusDistance = get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE),
             focalLengths = (get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
                 ?: floatArrayOf()).toList(),
@@ -92,6 +98,18 @@ class CameraCapabilityScanner(private val cameraManager: CameraManager) {
                 CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES,
             ) ?: emptyArray()).map { RawFpsRange(it.lower, it.upper) },
             maxDigitalZoom = get(CameraCharacteristics.SCALER_AVAILABLE_MAX_DIGITAL_ZOOM),
+            zoomRatioRange = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.let {
+                    RawFloatRange(it.lower, it.upper)
+                }
+            } else {
+                null
+            },
+            aeLockAvailable = get(CameraCharacteristics.CONTROL_AE_LOCK_AVAILABLE) == true,
+            awbLockAvailable = get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true,
+            maxAfMeteringRegions = get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0,
+            maxAeMeteringRegions = get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0,
+            maxAwbMeteringRegions = get(CameraCharacteristics.CONTROL_MAX_REGIONS_AWB) ?: 0,
             requestCapabilities = (get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)
                 ?: intArrayOf()).toList(),
             opticalStabilizationModes =

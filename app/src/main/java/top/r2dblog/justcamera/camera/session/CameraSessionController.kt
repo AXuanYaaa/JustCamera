@@ -23,6 +23,8 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
         private set
     var imageReader: ImageReader? = null
         private set
+    var rawImageReader: ImageReader? = null
+        private set
     var previewSurface: Surface? = null
         private set
 
@@ -44,6 +46,12 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
         checkCameraThread()
         imageReader?.close()
         imageReader = reader
+    }
+
+    fun replaceRawImageReader(reader: ImageReader?) {
+        checkCameraThread()
+        rawImageReader?.close()
+        rawImageReader = reader
     }
 
     fun adoptCaptureSession(session: CameraCaptureSession) {
@@ -68,7 +76,7 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
     fun closeAll(): Boolean {
         checkCameraThread()
         val hadResources = captureSession != null || cameraDevice != null ||
-            imageReader != null || previewSurface != null
+            imageReader != null || rawImageReader != null || previewSurface != null
 
         try {
             captureSession?.stopRepeating()
@@ -83,6 +91,8 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
         cameraDevice = null
         imageReader?.close()
         imageReader = null
+        rawImageReader?.close()
+        rawImageReader = null
         previewSurface?.release()
         previewSurface = null
         return hadResources

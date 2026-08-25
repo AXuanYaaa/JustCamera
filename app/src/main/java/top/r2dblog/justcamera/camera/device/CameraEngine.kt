@@ -11,9 +11,11 @@ import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.media.Image
 import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
@@ -21,42 +23,62 @@ import android.os.HandlerThread
 import android.os.Looper
 import android.view.Surface
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import top.r2dblog.justcamera.camera.capability.CameraCapabilityScanner
+import top.r2dblog.justcamera.camera.capture.CaptureOutcomeTracker
+import top.r2dblog.justcamera.camera.capture.MediaStoreDngSaver
 import top.r2dblog.justcamera.camera.capture.MediaStoreJpegSaver
+import top.r2dblog.justcamera.camera.control.CameraControlState
+import top.r2dblog.justcamera.camera.control.CameraRequestController
+import top.r2dblog.justcamera.camera.control.CaptureModeResolver
+import top.r2dblog.justcamera.camera.control.MeteringRegionMapper
+import top.r2dblog.justcamera.camera.control.ZoomCropCalculator
 import top.r2dblog.justcamera.camera.model.CameraCapabilities
+import top.r2dblog.justcamera.camera.model.CameraCaptureMetadata
+import top.r2dblog.justcamera.camera.model.CameraControlCapabilities
 import top.r2dblog.justcamera.camera.model.CameraError
 import top.r2dblog.justcamera.camera.model.CameraErrorCode
 import top.r2dblog.justcamera.camera.model.CameraEvent
 import top.r2dblog.justcamera.camera.model.CameraFacing
+import top.r2dblog.justcamera.camera.model.CameraOutputFormat
 import top.r2dblog.justcamera.camera.model.CameraState
 import top.r2dblog.justcamera.camera.model.CameraStateReducer
+import top.r2dblog.justcamera.camera.model.CaptureOutputType
 import top.r2dblog.justcamera.camera.model.CaptureStatus
+import top.r2dblog.justcamera.camera.model.CaptureMode
+import top.r2dblog.justcamera.camera.model.FocusMode
 import top.r2dblog.justcamera.camera.model.ImageSize
+import top.r2dblog.justcamera.camera.raw.DngPair
+import top.r2dblog.justcamera.camera.raw.DngPairingQueue
+import top.r2dblog.justcamera.camera.raw.DngPairingUpdate
+import top.r2dblog.justcamera.camera.raw.RawCapabilitySelector
 import top.r2dblog.justcamera.camera.session.CameraRecoveryPolicy
 import top.r2dblog.justcamera.camera.session.CameraSessionController
 import top.r2dblog.justcamera.camera.session.OrientationCalculator
 import top.r2dblog.justcamera.camera.session.PreviewSizeSelector
 import top.r2dblog.justcamera.logging.JcLog
 import top.r2dblog.justcamera.logging.LogCategory
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executor
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 
 internal class CameraEngine(context: Context) {
     private val appContext = context.applicationContext
     private val cameraManager = appContext.getSystemService(CameraManager::class.java)
     private val scanner = CameraCapabilityScanner(cameraManager)
-    private val mediaSaver = MediaStoreJpegSaver(appContext)
+    private val jpegSaver = MediaStoreJpegSaver(appContext)
+    private val dngSaver = MediaStoreDngSaver(appContext)
     private val workerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val cameraThread = HandlerThread("JustCamera-Camera").apply { start() }
@@ -65,6 +87,8 @@ internal class CameraEngine(context: Context) {
     private val imageHandler = Handler(imageThread.looper)
     private val sessionController = CameraSessionController(cameraThread.looper)
     private val recoveryPolicy = CameraRecoveryPolicy()
+    private val rawPairing = DngPairingQueue<Image, TotalCaptureResult>()
+    private val jpegPairing = DngPairingQueue<ByteArray, Unit>(maxPendingTimestamps = 2)
 
     private val _state = MutableStateFlow<CameraState>(CameraState.Closed)
     val state: StateFlow<CameraState> = _state.asStateFlow()
@@ -76,12 +100,25 @@ internal class CameraEngine(context: Context) {
     val selectedCamera: StateFlow<CameraCapabilities?> = _selectedCamera.asStateFlow()
     private val _previewSize = MutableStateFlow<ImageSize?>(null)
     val previewSize: StateFlow<ImageSize?> = _previewSize.asStateFlow()
+    private val _controlState = MutableStateFlow(CameraControlState())
+    val controlState: StateFlow<CameraControlState> = _controlState.asStateFlow()
+    private val _controlCapabilities = MutableStateFlow(CameraControlCapabilities())
+    val controlCapabilities: StateFlow<CameraControlCapabilities> =
+        _controlCapabilities.asStateFlow()
+    private val _controlError = MutableStateFlow<CameraError?>(null)
+    val controlError: StateFlow<CameraError?> = _controlError.asStateFlow()
+    private val _captureMetadata = MutableStateFlow(CameraCaptureMetadata())
+    val captureMetadata: StateFlow<CameraCaptureMetadata> = _captureMetadata.asStateFlow()
+    private val _rawCaptureAvailable = MutableStateFlow(false)
+    val rawCaptureAvailable: StateFlow<Boolean> = _rawCaptureAvailable.asStateFlow()
 
     @Volatile private var running = false
     @Volatile private var cameraPermissionGranted = false
     @Volatile private var storagePermissionGranted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+    @Volatile private var released = false
     private var discoveryJob: Job? = null
-    @Volatile private var activeSaveJob: Job? = null
+    private val saveJobsLock = Any()
+    private val activeSaveJobs = mutableSetOf<Job>()
     private var surfaceTexture: SurfaceTexture? = null
     private var surfaceWidth: Int = 0
     private var surfaceHeight: Int = 0
@@ -89,6 +126,16 @@ internal class CameraEngine(context: Context) {
     private var cameraCallbackGeneration = 0L
     private var completedRetryAttempts = 0
     private var retryRunnable: Runnable? = null
+    private var requestController: CameraRequestController? = null
+    private var activeCharacteristics: CameraCharacteristics? = null
+    private val rawTopologyDisabledCameraIds = mutableSetOf<String>()
+    private var lastMetadataPublishTimestamp = Long.MIN_VALUE
+
+    private val captureLock = Any()
+    @Volatile private var activeCapture: ActiveCapture? = null
+    private var nextCaptureToken = 0L
+    private var captureTimeoutRunnable: Runnable? = null
+    private var tapFocusResetRunnable: Runnable? = null
 
     fun updatePermissions(cameraGranted: Boolean, storageGranted: Boolean) {
         cameraPermissionGranted = cameraGranted
@@ -121,6 +168,7 @@ internal class CameraEngine(context: Context) {
 
     fun release() {
         running = false
+        released = true
         discoveryJob?.cancel()
         cameraHandler.post {
             closeResources(emitClosed = true)
@@ -128,11 +176,8 @@ internal class CameraEngine(context: Context) {
             imageThread.quitSafely()
         }
         workerScope.cancel()
-        val saveJob = activeSaveJob
-        if (saveJob == null || !saveJob.isActive) {
-            ioScope.cancel()
-        } else {
-            saveJob.invokeOnCompletion { ioScope.cancel() }
+        synchronized(saveJobsLock) {
+            if (activeSaveJobs.isEmpty()) ioScope.cancel()
         }
     }
 
@@ -181,7 +226,7 @@ internal class CameraEngine(context: Context) {
                 it.cameraId == _selectedCamera.value?.cameraId
             }.coerceAtLeast(0)
             closeResources(emitClosed = true)
-            _selectedCamera.value = available[(currentIndex + 1) % available.size]
+            selectCameraOnCameraThread(available[(currentIndex + 1) % available.size])
             if (running) openSelectedCameraIfReady()
         }
     }
@@ -191,71 +236,82 @@ internal class CameraEngine(context: Context) {
             val selected = _cameras.value.firstOrNull { it.cameraId == cameraId } ?: return@post
             if (selected.cameraId == _selectedCamera.value?.cameraId) return@post
             closeResources(emitClosed = true)
-            _selectedCamera.value = selected
+            selectCameraOnCameraThread(selected)
             if (running) openSelectedCameraIfReady()
         }
     }
 
-    fun captureJpeg() {
-        cameraHandler.post {
-            val device = sessionController.cameraDevice
-            val session = sessionController.captureSession
-            val reader = sessionController.imageReader
-            val camera = _selectedCamera.value
-            if (device == null || session == null || reader == null || camera == null) {
-                failAndClose(
-                    CameraError(
-                        CameraErrorCode.CAMERA_UNAVAILABLE,
-                        "Camera is not ready to capture",
-                    ),
-                )
-                return@post
-            }
-            if (!storagePermissionGranted) {
-                val error = CameraError(
-                    CameraErrorCode.PERMISSION_DENIED,
-                    "Photo storage permission is required on this Android version",
-                )
-                _captureStatus.value = CaptureStatus.Failed(error)
-                return@post
-            }
-            if (_captureStatus.value is CaptureStatus.Capturing ||
-                _captureStatus.value is CaptureStatus.Saving
-            ) return@post
+    fun updateControls(candidate: CameraControlState) {
+        cameraHandler.post { updateControlsOnCameraThread(candidate) }
+    }
 
-            try {
-                val request = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-                    addTarget(reader.surface)
-                    set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                    if ("Continuous picture" in camera.afModes) {
-                        set(
-                            CaptureRequest.CONTROL_AF_MODE,
-                            CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
-                        )
-                    }
-                    set(
-                        CaptureRequest.JPEG_ORIENTATION,
-                        OrientationCalculator.jpegOrientation(
-                            camera.sensorOrientation,
-                            displayRotationDegrees,
-                            camera.facing,
-                        ),
-                    )
-                }.build()
-                _captureStatus.value = CaptureStatus.Capturing
-                transition(CameraEvent.CaptureStarted(camera.cameraId))
-                session.capture(request, captureCallback(camera.cameraId), cameraHandler)
-            } catch (error: CameraAccessException) {
-                captureFailed("Camera rejected the JPEG capture request", error)
-            } catch (error: IllegalStateException) {
-                captureFailed("Capture session closed before the request", error)
+    fun focusAt(normalizedX: Float, normalizedY: Float) {
+        cameraHandler.post {
+            val camera = _selectedCamera.value ?: return@post
+            val controller = requestController ?: return@post
+            val capabilities = controller.capabilities
+            if (capabilities.maxAfMeteringRegions <= 0 &&
+                capabilities.maxAeMeteringRegions <= 0
+            ) {
+                publishControlError(
+                    CameraErrorCode.UNSUPPORTED_CONTROL,
+                    "This camera does not support focus or exposure metering regions",
+                )
+                return@post
+            }
+            val activeArray = camera.activeArray ?: return@post
+            val zoom = controller.requestedState.zoomRatio
+            val crop = if (zoom >= 1f) ZoomCropCalculator.crop(activeArray, zoom) else activeArray
+            val region = MeteringRegionMapper.map(
+                normalizedX = normalizedX,
+                normalizedY = normalizedY,
+                cropRegion = crop,
+                relativeRotationDegrees = OrientationCalculator.relativePreviewRotation(
+                    camera.sensorOrientation,
+                    displayRotationDegrees,
+                    camera.facing,
+                ),
+                mirrorHorizontally = camera.facing == CameraFacing.FRONT,
+            )
+            val update = controller.update(controller.requestedState.copy(meteringRegion = region))
+            if (update.accepted) {
+                _controlState.value = update.state
+                updateRepeatingPreview()
+                if (capabilities.maxAfMeteringRegions > 0 &&
+                    update.state.focusMode != FocusMode.MANUAL
+                ) {
+                    triggerAutoFocus(triggerStart = true)
+                    scheduleTapFocusReset()
+                }
             }
         }
     }
 
+    fun capture() {
+        cameraHandler.post { captureOnCameraThread() }
+    }
+
+    fun captureJpeg() = capture()
+
+    private fun selectCameraOnCameraThread(camera: CameraCapabilities) {
+        checkCameraThread()
+        _selectedCamera.value = camera
+        requestController = CameraRequestController(camera).also { controller ->
+            if (camera.cameraId in rawTopologyDisabledCameraIds) {
+                controller.setRawAvailable(false)
+            }
+            publishRequestedControls(controller)
+        }
+        _captureMetadata.value = CameraCaptureMetadata()
+        _controlError.value = null
+    }
+
     private fun ensureDiscoveryAndOpen() {
         if (_cameras.value.isNotEmpty()) {
-            cameraHandler.post { openSelectedCameraIfReady() }
+            cameraHandler.post {
+                _selectedCamera.value?.let(::ensureRequestController)
+                openSelectedCameraIfReady()
+            }
             return
         }
         if (discoveryJob?.isActive == true) return
@@ -275,6 +331,7 @@ internal class CameraEngine(context: Context) {
                         ),
                     )
                 } else if (running) {
+                    _selectedCamera.value?.let(::ensureRequestController)
                     openSelectedCameraIfReady()
                 }
             }
@@ -283,6 +340,18 @@ internal class CameraEngine(context: Context) {
 
     private fun preferredCamera(cameras: List<CameraCapabilities>): CameraCapabilities? =
         cameras.firstOrNull { it.facing == CameraFacing.BACK } ?: cameras.firstOrNull()
+
+    private fun ensureRequestController(camera: CameraCapabilities): CameraRequestController {
+        val current = requestController
+        if (current != null && _selectedCamera.value?.cameraId == camera.cameraId) return current
+        return CameraRequestController(camera).also { controller ->
+            if (camera.cameraId in rawTopologyDisabledCameraIds) {
+                controller.setRawAvailable(false)
+            }
+            requestController = controller
+            publishRequestedControls(controller)
+        }
+    }
 
     @SuppressLint("MissingPermission")
     private fun openSelectedCameraIfReady() {
@@ -294,9 +363,11 @@ internal class CameraEngine(context: Context) {
         ) return
         val texture = surfaceTexture ?: return
         val camera = _selectedCamera.value ?: return
+        ensureRequestController(camera)
 
         try {
             val characteristics = cameraManager.getCameraCharacteristics(camera.cameraId)
+            activeCharacteristics = characteristics
             val choices = characteristics
                 .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
                 ?.getOutputSizes(SurfaceTexture::class.java)
@@ -367,12 +438,7 @@ internal class CameraEngine(context: Context) {
                 return
             }
             sessionController.adoptCameraDevice(camera)
-            failAndClose(
-                CameraError(
-                    CameraErrorCode.DISCONNECTED,
-                    "Camera $cameraId disconnected",
-                ),
-            )
+            failAndClose(CameraError(CameraErrorCode.DISCONNECTED, "Camera $cameraId disconnected"))
         }
 
         override fun onError(camera: CameraDevice, error: Int) {
@@ -390,17 +456,13 @@ internal class CameraEngine(context: Context) {
         cameraId: String,
         callbackGeneration: Long,
     ) {
-        val surface = sessionController.previewSurface
+        val previewSurface = sessionController.previewSurface
         val capabilities = _selectedCamera.value
-        if (surface == null || !surface.isValid || capabilities == null) {
-            failAndClose(
-                CameraError(CameraErrorCode.INVALID_SURFACE, "Preview surface is invalid"),
-            )
+        if (previewSurface == null || !previewSurface.isValid || capabilities == null) {
+            failAndClose(CameraError(CameraErrorCode.INVALID_SURFACE, "Preview surface is invalid"))
             return
         }
-        val jpegSize = capabilities.sizesFor(
-            top.r2dblog.justcamera.camera.model.CameraOutputFormat.JPEG,
-        ).maxByOrNull { it.area }
+        val jpegSize = capabilities.sizesFor(CameraOutputFormat.JPEG).maxByOrNull { it.area }
         if (jpegSize == null) {
             failAndClose(
                 CameraError(
@@ -412,16 +474,41 @@ internal class CameraEngine(context: Context) {
             return
         }
 
+        val rawSize = if (cameraId !in rawTopologyDisabledCameraIds) {
+            RawCapabilitySelector.selectLargest(
+                capabilities.hasRawCapability,
+                capabilities.sizesFor(CameraOutputFormat.RAW_SENSOR),
+            )
+        } else {
+            null
+        }
+        val attemptingRawTopology = rawSize != null
+
         try {
-            val reader = ImageReader.newInstance(
+            val jpegReader = ImageReader.newInstance(
                 jpegSize.width,
                 jpegSize.height,
                 ImageFormat.JPEG,
                 2,
-            ).apply { setOnImageAvailableListener(::onImageAvailable, imageHandler) }
-            sessionController.replaceImageReader(reader)
+            ).apply { setOnImageAvailableListener(::onJpegImageAvailable, imageHandler) }
+            sessionController.replaceImageReader(jpegReader)
+
+            val rawReader = rawSize?.let { size ->
+                ImageReader.newInstance(
+                    size.width,
+                    size.height,
+                    ImageFormat.RAW_SENSOR,
+                    RAW_READER_MAX_IMAGES,
+                ).apply { setOnImageAvailableListener(::onRawImageAvailable, imageHandler) }
+            }
+            sessionController.replaceRawImageReader(rawReader)
 
             transition(CameraEvent.Configure(cameraId))
+            val outputSurfaces = buildList {
+                add(previewSurface)
+                add(jpegReader.surface)
+                rawReader?.surface?.let(::add)
+            }
             val sessionCallback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
                     if (!isCurrentCallback(cameraId, callbackGeneration) ||
@@ -431,16 +518,22 @@ internal class CameraEngine(context: Context) {
                         return
                     }
                     sessionController.adoptCaptureSession(session)
-                    startPreview(device, session, surface, cameraId)
+                    setEffectiveRawAvailability(rawReader != null)
+                    startPreview(device, session, previewSurface, cameraId)
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
                     sessionController.closeUnownedSession(session)
                     if (!isCurrentCallback(cameraId, callbackGeneration)) return
+                    if (attemptingRawTopology) disableRawTopology(cameraId)
                     failAndClose(
                         CameraError(
                             CameraErrorCode.SESSION_CONFIGURATION_FAILED,
-                            "Camera $cameraId preview session configuration failed",
+                            if (attemptingRawTopology) {
+                                "Camera $cameraId rejected preview + JPEG + RAW; retrying JPEG only"
+                            } else {
+                                "Camera $cameraId preview session configuration failed"
+                            },
                         ),
                     )
                 }
@@ -449,33 +542,29 @@ internal class CameraEngine(context: Context) {
                 device.createCaptureSession(
                     SessionConfiguration(
                         SessionConfiguration.SESSION_REGULAR,
-                        listOf(
-                            OutputConfiguration(surface),
-                            OutputConfiguration(reader.surface),
-                        ),
+                        outputSurfaces.map(::OutputConfiguration),
                         Executor { runnable -> cameraHandler.post(runnable) },
                         sessionCallback,
                     ),
                 )
             } else {
                 @Suppress("DEPRECATION")
-                device.createCaptureSession(
-                    listOf(surface, reader.surface),
-                    sessionCallback,
-                    cameraHandler,
-                )
+                device.createCaptureSession(outputSurfaces, sessionCallback, cameraHandler)
             }
         } catch (error: CameraAccessException) {
+            if (attemptingRawTopology) disableRawTopology(cameraId)
             failAndClose(accessError("Unable to configure camera $cameraId", error))
         } catch (error: IllegalArgumentException) {
+            if (attemptingRawTopology) disableRawTopology(cameraId)
             failAndClose(
                 CameraError(
-                    CameraErrorCode.INVALID_SURFACE,
-                    "Preview or JPEG surface was rejected",
+                    CameraErrorCode.SESSION_CONFIGURATION_FAILED,
+                    "Camera $cameraId rejected the capture output topology",
                     error,
                 ),
             )
         } catch (error: IllegalStateException) {
+            if (attemptingRawTopology) disableRawTopology(cameraId)
             failAndClose(
                 CameraError(
                     CameraErrorCode.SESSION_CONFIGURATION_FAILED,
@@ -495,15 +584,9 @@ internal class CameraEngine(context: Context) {
         try {
             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(surface)
-                set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-                if ("Continuous picture" in _selectedCamera.value?.afModes.orEmpty()) {
-                    set(
-                        CaptureRequest.CONTROL_AF_MODE,
-                        CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE,
-                    )
-                }
+                requestController?.apply(this)
             }.build()
-            session.setRepeatingRequest(request, null, cameraHandler)
+            session.setRepeatingRequest(request, previewCaptureCallback, cameraHandler)
             cancelScheduledRetry(resetAttempts = true)
             transition(CameraEvent.PreviewStarted(cameraId))
             JcLog.info(LogCategory.CAMERA, "Preview started on camera $cameraId")
@@ -519,75 +602,641 @@ internal class CameraEngine(context: Context) {
             )
         } catch (error: IllegalArgumentException) {
             failAndClose(
+                CameraError(CameraErrorCode.INVALID_SURFACE, "Preview request was rejected", error),
+            )
+        }
+    }
+
+    private val previewCaptureCallback = object : CameraCaptureSession.CaptureCallback() {
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult,
+        ) {
+            if (session === sessionController.captureSession) {
+                publishMetadata(result, throttled = true)
+            }
+        }
+    }
+
+    private fun updateControlsOnCameraThread(candidate: CameraControlState) {
+        checkCameraThread()
+        val controller = requestController ?: _selectedCamera.value?.let(::ensureRequestController)
+            ?: return
+        val previous = controller.requestedState
+        val update = controller.update(candidate)
+        if (!update.accepted) {
+            publishControlError(CameraErrorCode.INVALID_CONTROL_VALUE, update.messages.joinToString())
+            return
+        }
+        publishRequestedControls(controller)
+        _controlError.value = update.messages.takeIf { it.isNotEmpty() }?.let {
+            CameraError(
+                CameraErrorCode.INVALID_CONTROL_VALUE,
+                it.joinToString(),
+                recoverable = true,
+            )
+        }
+        updateRepeatingPreview()
+        if (previous.afLockRequested != update.state.afLockRequested) {
+            triggerAutoFocus(triggerStart = update.state.afLockRequested)
+        }
+    }
+
+    private fun updateRepeatingPreview() {
+        val device = sessionController.cameraDevice ?: return
+        val session = sessionController.captureSession ?: return
+        val surface = sessionController.previewSurface ?: return
+        try {
+            val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(surface)
+                requestController?.apply(this)
+            }.build()
+            session.setRepeatingRequest(request, previewCaptureCallback, cameraHandler)
+        } catch (error: IllegalArgumentException) {
+            publishControlError(
+                CameraErrorCode.INVALID_CONTROL_VALUE,
+                "The camera rejected the requested control combination",
+                error,
+            )
+        } catch (error: CameraAccessException) {
+            failAndClose(accessError("Unable to update camera controls", error))
+        } catch (error: IllegalStateException) {
+            failAndClose(
                 CameraError(
-                    CameraErrorCode.INVALID_SURFACE,
-                    "Preview request was rejected",
+                    CameraErrorCode.SESSION_CONFIGURATION_FAILED,
+                    "Preview session closed while updating controls",
                     error,
                 ),
             )
         }
     }
 
-    private fun captureCallback(cameraId: String) = object : CameraCaptureSession.CaptureCallback() {
-        override fun onCaptureCompleted(
-            session: CameraCaptureSession,
-            request: CaptureRequest,
-            result: TotalCaptureResult,
+    private fun triggerAutoFocus(triggerStart: Boolean) {
+        val device = sessionController.cameraDevice ?: return
+        val session = sessionController.captureSession ?: return
+        val surface = sessionController.previewSurface ?: return
+        val controller = requestController ?: return
+        if (FocusMode.AUTO !in controller.capabilities.focusModes && triggerStart &&
+            controller.capabilities.maxAfMeteringRegions <= 0
         ) {
-            transition(CameraEvent.PreviewStarted(cameraId))
+            publishControlError(CameraErrorCode.UNSUPPORTED_CONTROL, "AF lock requires AUTO focus")
+            return
         }
-
-        override fun onCaptureFailed(
-            session: CameraCaptureSession,
-            request: CaptureRequest,
-            failure: CaptureFailure,
-        ) {
-            captureFailed(
-                "JPEG capture failed (reason=${failure.reason}, frame=${failure.frameNumber})",
-                null,
+        try {
+            val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(surface)
+                controller.apply(this)
+                set(
+                    CaptureRequest.CONTROL_AF_TRIGGER,
+                    if (triggerStart) {
+                        CaptureRequest.CONTROL_AF_TRIGGER_START
+                    } else {
+                        CaptureRequest.CONTROL_AF_TRIGGER_CANCEL
+                    },
+                )
+            }.build()
+            session.capture(request, previewCaptureCallback, cameraHandler)
+        } catch (error: IllegalArgumentException) {
+            publishControlError(
+                CameraErrorCode.INVALID_CONTROL_VALUE,
+                "The camera rejected the autofocus trigger",
+                error,
+            )
+        } catch (error: CameraAccessException) {
+            failAndClose(accessError("Unable to trigger autofocus", error))
+        } catch (error: IllegalStateException) {
+            failAndClose(
+                CameraError(
+                    CameraErrorCode.SESSION_CONFIGURATION_FAILED,
+                    "Preview session closed while triggering autofocus",
+                    error,
+                ),
             )
         }
     }
 
-    private fun onImageAvailable(reader: ImageReader) {
+    private fun scheduleTapFocusReset() {
+        tapFocusResetRunnable?.let(cameraHandler::removeCallbacks)
+        val runnable = Runnable {
+            tapFocusResetRunnable = null
+            if (requestController?.requestedState?.afLockRequested == false) {
+                triggerAutoFocus(triggerStart = false)
+            }
+        }
+        tapFocusResetRunnable = runnable
+        cameraHandler.postDelayed(runnable, TAP_FOCUS_HOLD_MS)
+    }
+
+    private fun captureOnCameraThread() {
+        checkCameraThread()
+        val device = sessionController.cameraDevice
+        val session = sessionController.captureSession
+        val jpegReader = sessionController.imageReader
+        val rawReader = sessionController.rawImageReader
+        val camera = _selectedCamera.value
+        val controller = requestController
+        if (device == null || session == null || jpegReader == null ||
+            camera == null || controller == null
+        ) {
+            failAndClose(
+                CameraError(CameraErrorCode.CAMERA_UNAVAILABLE, "Camera is not ready to capture"),
+            )
+            return
+        }
+        if (!storagePermissionGranted) {
+            _captureStatus.value = CaptureStatus.Failed(
+                CameraError(
+                    CameraErrorCode.PERMISSION_DENIED,
+                    "Photo storage permission is required on this Android version",
+                ),
+            )
+            return
+        }
+        if (_captureStatus.value is CaptureStatus.Capturing ||
+            _captureStatus.value is CaptureStatus.Saving
+        ) return
+
+        val rawAvailable = rawReader != null && _rawCaptureAvailable.value
+        val mode = CaptureModeResolver.resolve(controller.requestedState.captureMode, rawAvailable)
+        if (mode != controller.requestedState.captureMode) {
+            controller.update(controller.requestedState.copy(captureMode = mode))
+            publishRequestedControls(controller)
+            publishControlError(
+                CameraErrorCode.RAW_UNSUPPORTED,
+                "RAW is unavailable for this session; capturing JPEG",
+            )
+        }
+        val expected = when (mode) {
+            CaptureMode.JPEG_ONLY -> setOf(CaptureOutputType.JPEG)
+            CaptureMode.RAW_ONLY -> setOf(CaptureOutputType.DNG)
+            CaptureMode.JPEG_AND_RAW -> setOf(CaptureOutputType.JPEG, CaptureOutputType.DNG)
+        }
+        val baseName = "JC_${FILE_NAME_FORMAT.format(Date())}"
+        val batch = beginCapture(mode, expected, baseName)
+
+        try {
+            val request = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                if (CaptureOutputType.JPEG in expected) {
+                    addTarget(jpegReader.surface)
+                    set(
+                        CaptureRequest.JPEG_ORIENTATION,
+                        OrientationCalculator.jpegOrientation(
+                            camera.sensorOrientation,
+                            displayRotationDegrees,
+                            camera.facing,
+                        ),
+                    )
+                }
+                if (CaptureOutputType.DNG in expected) addTarget(rawReader!!.surface)
+                controller.apply(this)
+            }.build()
+            transition(CameraEvent.CaptureStarted(camera.cameraId))
+            session.capture(request, stillCaptureCallback(batch), cameraHandler)
+        } catch (error: CameraAccessException) {
+            failCaptureRequest(batch.token, "Camera rejected the still capture request", error)
+        } catch (error: IllegalStateException) {
+            failCaptureRequest(batch.token, "Capture session closed before the request", error)
+        } catch (error: IllegalArgumentException) {
+            failCaptureRequest(batch.token, "Capture request controls or targets were rejected", error)
+        }
+    }
+
+    private fun stillCaptureCallback(batch: ActiveCapture) =
+        object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult,
+            ) {
+                if (!isActiveCapture(batch)) return
+                publishMetadata(result, throttled = false)
+                _selectedCamera.value?.cameraId?.let {
+                    transition(CameraEvent.PreviewStarted(it))
+                }
+                val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP)
+                if (CaptureOutputType.JPEG in batch.expectedOutputs) {
+                    if (timestamp == null) {
+                        completeOutputFailure(
+                            batch.token,
+                            CaptureOutputType.JPEG,
+                            CameraError(
+                                CameraErrorCode.CAPTURE_FAILED,
+                                "JPEG capture result did not contain a sensor timestamp",
+                            ),
+                        )
+                    } else {
+                        handleJpegPairingUpdate(
+                            batch.token,
+                            jpegPairing.offerResult(timestamp, Unit),
+                        )
+                    }
+                }
+                if (CaptureOutputType.DNG in batch.expectedOutputs) {
+                    if (timestamp == null) {
+                        completeOutputFailure(
+                            batch.token,
+                            CaptureOutputType.DNG,
+                            CameraError(
+                                CameraErrorCode.RAW_PAIRING_FAILED,
+                                "RAW capture result did not contain a sensor timestamp",
+                            ),
+                        )
+                    } else {
+                        handlePairingUpdate(batch.token, rawPairing.offerResult(timestamp, result))
+                    }
+                }
+            }
+
+            override fun onCaptureFailed(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                failure: CaptureFailure,
+            ) {
+                failCaptureRequest(
+                    batch.token,
+                    "Still capture failed (reason=${failure.reason}, frame=${failure.frameNumber})",
+                    null,
+                )
+            }
+
+            override fun onCaptureSequenceAborted(
+                session: CameraCaptureSession,
+                sequenceId: Int,
+            ) {
+                failCaptureRequest(batch.token, "Still capture sequence was aborted", null)
+            }
+        }
+
+    private fun onJpegImageAvailable(reader: ImageReader) {
         val image = try {
             reader.acquireNextImage()
         } catch (error: IllegalStateException) {
-            captureFailed("JPEG ImageReader queue is unavailable", error)
+            currentCaptureTokenFor(CaptureOutputType.JPEG)?.let { token ->
+                completeOutputFailure(
+                    token,
+                    CaptureOutputType.JPEG,
+                    CameraError(
+                        CameraErrorCode.CAPTURE_FAILED,
+                        "JPEG ImageReader queue is unavailable",
+                        error,
+                    ),
+                )
+            }
             return
         } ?: return
 
+        val captureToken = currentCaptureTokenFor(CaptureOutputType.JPEG)
+        if (captureToken == null) {
+            image.close()
+            return
+        }
+        val imageTimestamp = image.timestamp
         val bytes = try {
             val buffer = image.planes.first().buffer
             ByteArray(buffer.remaining()).also(buffer::get)
+        } catch (error: RuntimeException) {
+            completeOutputFailure(
+                captureToken,
+                CaptureOutputType.JPEG,
+                CameraError(CameraErrorCode.CAPTURE_FAILED, "Unable to read JPEG image", error),
+            )
+            return
         } finally {
             image.close()
         }
-        _captureStatus.value = CaptureStatus.Saving
-        val displayName = "JC_${FILE_NAME_FORMAT.format(Date())}.jpg"
-        activeSaveJob = ioScope.launch {
-            val result = mediaSaver.save(bytes, displayName)
-            _captureStatus.value = result.fold(
-                onSuccess = { CaptureStatus.Saved(it.displayName) },
-                onFailure = {
-                    CaptureStatus.Failed(
-                        CameraError(
-                            CameraErrorCode.STORAGE_FAILED,
-                            "Failed to save $displayName",
-                            it,
-                        ),
+        handleJpegPairingUpdate(
+            captureToken,
+            jpegPairing.offerImage(imageTimestamp, bytes),
+        )
+    }
+
+    private fun onRawImageAvailable(reader: ImageReader) {
+        val image = try {
+            reader.acquireNextImage()
+        } catch (error: IllegalStateException) {
+            currentCaptureTokenFor(CaptureOutputType.DNG)?.let { token ->
+                completeOutputFailure(
+                    token,
+                    CaptureOutputType.DNG,
+                    CameraError(
+                        CameraErrorCode.RAW_CAPTURE_FAILED,
+                        "RAW ImageReader queue is unavailable",
+                        error,
+                    ),
+                )
+            }
+            return
+        } ?: return
+
+        val captureToken = currentCaptureTokenFor(CaptureOutputType.DNG)
+        if (captureToken == null) {
+            image.close()
+            return
+        }
+        handlePairingUpdate(captureToken, rawPairing.offerImage(image.timestamp, image))
+    }
+
+    private fun handleJpegPairingUpdate(
+        captureToken: Long,
+        update: DngPairingUpdate<ByteArray, Unit>,
+    ) {
+        if (update.discardedImages.isNotEmpty()) {
+            JcLog.debug(LogCategory.CAPTURE) {
+                "Discarded ${update.discardedImages.size} stale JPEG pairing entries"
+            }
+        }
+        update.ready.forEach { pair ->
+            val batch = beginOutputForToken(captureToken, CaptureOutputType.JPEG)
+                ?: return@forEach
+            launchSave {
+                val displayName = "${batch.baseName}.jpg"
+                val result = jpegSaver.save(pair.image, displayName)
+                result.fold(
+                    onSuccess = {
+                        completeOutputSuccess(
+                            batch.token,
+                            CaptureOutputType.JPEG,
+                            it.displayName,
+                        )
+                    },
+                    onFailure = {
+                        completeOutputFailure(
+                            batch.token,
+                            CaptureOutputType.JPEG,
+                            CameraError(
+                                CameraErrorCode.STORAGE_FAILED,
+                                "Failed to save $displayName",
+                                it,
+                            ),
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    private fun handlePairingUpdate(
+        captureToken: Long,
+        update: DngPairingUpdate<Image, TotalCaptureResult>,
+    ) {
+        update.discardedImages.forEach(Image::close)
+        update.ready.forEach { pair -> saveDngPair(captureToken, pair) }
+    }
+
+    private fun saveDngPair(
+        captureToken: Long,
+        pair: DngPair<Image, TotalCaptureResult>,
+    ) {
+        val batch = beginOutputForToken(captureToken, CaptureOutputType.DNG)
+        val characteristics = activeCharacteristics
+        if (batch == null || characteristics == null) {
+            pair.image.close()
+            completeOutputFailure(
+                captureToken,
+                CaptureOutputType.DNG,
+                CameraError(
+                    CameraErrorCode.RAW_PAIRING_FAILED,
+                    "Camera characteristics were unavailable for DNG encoding",
+                ),
+            )
+            return
+        }
+        launchSave {
+            val displayName = "${batch.baseName}.dng"
+            val result = dngSaver.save(characteristics, pair.result, pair.image, displayName)
+            result.fold(
+                onSuccess = {
+                    completeOutputSuccess(captureToken, CaptureOutputType.DNG, it.displayName)
+                },
+                onFailure = { error ->
+                    val code = if (error is IOException || error is SecurityException) {
+                        CameraErrorCode.STORAGE_FAILED
+                    } else {
+                        CameraErrorCode.DNG_ENCODING_FAILED
+                    }
+                    completeOutputFailure(
+                        captureToken,
+                        CaptureOutputType.DNG,
+                        CameraError(code, "Failed to save $displayName", error),
                     )
                 },
             )
         }
     }
 
+    private fun beginCapture(
+        mode: CaptureMode,
+        expectedOutputs: Set<CaptureOutputType>,
+        baseName: String,
+    ): ActiveCapture {
+        clearPendingImagePairs()
+        val batch = ActiveCapture(
+            token = ++nextCaptureToken,
+            generation = cameraCallbackGeneration,
+            mode = mode,
+            expectedOutputs = expectedOutputs,
+            baseName = baseName,
+            tracker = CaptureOutcomeTracker(mode, expectedOutputs),
+        )
+        synchronized(captureLock) { activeCapture = batch }
+        _captureStatus.value = CaptureStatus.Capturing(mode)
+        scheduleCaptureTimeout(batch.token)
+        return batch
+    }
+
+    private fun beginOutputForToken(
+        token: Long,
+        type: CaptureOutputType,
+    ): ActiveCapture? {
+        var allOutputsStarted = false
+        val batch = synchronized(captureLock) {
+            activeCapture?.takeIf {
+                it.token == token && it.generation == cameraCallbackGeneration &&
+                    type in it.expectedOutputs && it.tracker.begin(type)
+            }?.also {
+                _captureStatus.value = it.tracker.saving()
+                allOutputsStarted = !it.tracker.hasUnstartedOutputs()
+            }
+        }
+        if (allOutputsStarted) cancelCaptureTimeout()
+        return batch
+    }
+
+    private fun currentCaptureTokenFor(type: CaptureOutputType): Long? =
+        synchronized(captureLock) {
+            activeCapture?.takeIf { type in it.expectedOutputs }?.token
+        }
+
+    private fun isActiveCapture(batch: ActiveCapture): Boolean = synchronized(captureLock) {
+        activeCapture?.let { it.token == batch.token && it.generation == batch.generation } == true &&
+            batch.generation == cameraCallbackGeneration
+    }
+
+    private fun completeOutputSuccess(
+        token: Long,
+        type: CaptureOutputType,
+        displayName: String,
+    ) {
+        publishCaptureProgress(token) { it.succeed(type, displayName) }
+    }
+
+    private fun completeOutputFailure(token: Long, type: CaptureOutputType, error: CameraError) {
+        JcLog.error(LogCategory.CAPTURE, error.message, error.cause)
+        publishCaptureProgress(token) { it.fail(type, error) }
+    }
+
+    private fun publishCaptureProgress(
+        token: Long,
+        update: (CaptureOutcomeTracker) -> CaptureStatus,
+    ) {
+        var completed = false
+        var allOutputsStarted = false
+        val status = synchronized(captureLock) {
+            val batch = activeCapture?.takeIf { it.token == token } ?: return
+            val next = update(batch.tracker)
+            completed = batch.tracker.isComplete()
+            allOutputsStarted = !batch.tracker.hasUnstartedOutputs()
+            if (completed) activeCapture = null
+            next
+        }
+        _captureStatus.value = status
+        if (completed || allOutputsStarted) cancelCaptureTimeout()
+    }
+
+    private fun failCaptureRequest(token: Long, message: String, cause: Throwable?) {
+        clearPendingImagePairs()
+        val error = CameraError(CameraErrorCode.CAPTURE_FAILED, message, cause)
+        JcLog.error(LogCategory.CAPTURE, message, cause)
+        var completed = false
+        val status = synchronized(captureLock) {
+            val batch = activeCapture?.takeIf { it.token == token } ?: return
+            val next = batch.tracker.failPending { type ->
+                if (type == CaptureOutputType.DNG) {
+                    error.copy(code = CameraErrorCode.RAW_CAPTURE_FAILED)
+                } else {
+                    error
+                }
+            }
+            completed = true
+            activeCapture = null
+            next
+        }
+        _captureStatus.value = status
+        if (completed) cancelCaptureTimeout()
+        _selectedCamera.value?.cameraId?.let { transition(CameraEvent.PreviewStarted(it)) }
+    }
+
+    private fun scheduleCaptureTimeout(token: Long) {
+        cancelCaptureTimeout()
+        val runnable = Runnable {
+            captureTimeoutRunnable = null
+            clearPendingImagePairs()
+            var status: CaptureStatus? = null
+            synchronized(captureLock) {
+                val batch = activeCapture?.takeIf { it.token == token } ?: return@Runnable
+                status = batch.tracker.failPending { type ->
+                    CameraError(
+                        if (type == CaptureOutputType.DNG) {
+                            CameraErrorCode.RAW_PAIRING_FAILED
+                        } else {
+                            CameraErrorCode.CAPTURE_FAILED
+                        },
+                        "Timed out waiting for ${type.name} capture output",
+                    )
+                }
+                activeCapture = null
+            }
+            status?.let { _captureStatus.value = it }
+        }
+        captureTimeoutRunnable = runnable
+        cameraHandler.postDelayed(runnable, CAPTURE_TIMEOUT_MS)
+    }
+
+    private fun cancelActiveCapture(resetStatus: Boolean) {
+        cancelCaptureTimeout()
+        synchronized(captureLock) { activeCapture = null }
+        clearPendingImagePairs()
+        if (resetStatus && (_captureStatus.value is CaptureStatus.Capturing ||
+                _captureStatus.value is CaptureStatus.Saving)
+        ) {
+            _captureStatus.value = CaptureStatus.Idle
+        }
+    }
+
+    private fun clearPendingImagePairs() {
+        rawPairing.clear().forEach(Image::close)
+        jpegPairing.clear()
+    }
+
+    private fun cancelCaptureTimeout() {
+        captureTimeoutRunnable?.let(cameraHandler::removeCallbacks)
+        captureTimeoutRunnable = null
+    }
+
+    private fun publishMetadata(result: TotalCaptureResult, throttled: Boolean) {
+        val controller = requestController ?: return
+        val timestamp = result.get(CaptureResult.SENSOR_TIMESTAMP) ?: 0L
+        if (throttled && lastMetadataPublishTimestamp != Long.MIN_VALUE &&
+            timestamp - lastMetadataPublishTimestamp < METADATA_INTERVAL_NS
+        ) return
+        lastMetadataPublishTimestamp = timestamp
+        _captureMetadata.value = controller.metadata(result)
+    }
+
+    private fun setEffectiveRawAvailability(available: Boolean) {
+        _rawCaptureAvailable.value = available
+        requestController?.let { controller ->
+            controller.setRawAvailable(available)
+            publishRequestedControls(controller)
+        }
+    }
+
+    private fun disableRawTopology(cameraId: String) {
+        rawTopologyDisabledCameraIds += cameraId
+        setEffectiveRawAvailability(false)
+        JcLog.warn(LogCategory.CAMERA, "RAW session topology disabled for camera $cameraId")
+    }
+
+    private fun publishRequestedControls(controller: CameraRequestController) {
+        _controlState.value = controller.requestedState
+        _controlCapabilities.value = controller.capabilities
+    }
+
+    private fun publishControlError(
+        code: CameraErrorCode,
+        message: String,
+        cause: Throwable? = null,
+    ) {
+        _controlError.value = CameraError(code, message, cause, recoverable = true)
+        JcLog.warn(LogCategory.CAMERA, message, cause)
+    }
+
+    private fun launchSave(block: suspend () -> Unit) {
+        lateinit var job: Job
+        job = ioScope.launch(start = CoroutineStart.LAZY) { block() }
+        synchronized(saveJobsLock) { activeSaveJobs += job }
+        job.invokeOnCompletion {
+            synchronized(saveJobsLock) {
+                activeSaveJobs -= job
+                if (released && activeSaveJobs.isEmpty()) ioScope.cancel()
+            }
+        }
+        job.start()
+    }
+
     private fun closeResources(emitClosed: Boolean) {
         checkCameraThread()
         cancelScheduledRetry(resetAttempts = true)
+        tapFocusResetRunnable?.let(cameraHandler::removeCallbacks)
+        tapFocusResetRunnable = null
         cameraCallbackGeneration++
+        cancelActiveCapture(resetStatus = true)
         sessionController.closeAll()
+        activeCharacteristics = null
         _previewSize.value = null
+        _rawCaptureAvailable.value = false
+        lastMetadataPublishTimestamp = Long.MIN_VALUE
         if (emitClosed && _state.value != CameraState.Closed) transition(CameraEvent.Close)
     }
 
@@ -597,20 +1246,17 @@ internal class CameraEngine(context: Context) {
         if (next != current) _state.value = next
     }
 
-    private fun captureFailed(message: String, cause: Throwable?) {
-        val error = CameraError(CameraErrorCode.CAPTURE_FAILED, message, cause)
-        _captureStatus.value = CaptureStatus.Failed(error)
-        val id = _selectedCamera.value?.cameraId
-        if (id != null) transition(CameraEvent.PreviewStarted(id))
-        JcLog.error(LogCategory.CAPTURE, message, cause)
-    }
-
     private fun failAndClose(error: CameraError) {
         checkCameraThread()
         cancelScheduledRetry(resetAttempts = false)
+        tapFocusResetRunnable?.let(cameraHandler::removeCallbacks)
+        tapFocusResetRunnable = null
         cameraCallbackGeneration++
+        cancelActiveCapture(resetStatus = true)
         sessionController.closeAll()
+        activeCharacteristics = null
         _previewSize.value = null
+        _rawCaptureAvailable.value = false
         publishError(error)
         scheduleRetry(error)
     }
@@ -684,7 +1330,20 @@ internal class CameraEngine(context: Context) {
         else -> "unknown ($error)"
     }
 
+    private data class ActiveCapture(
+        val token: Long,
+        val generation: Long,
+        val mode: CaptureMode,
+        val expectedOutputs: Set<CaptureOutputType>,
+        val baseName: String,
+        val tracker: CaptureOutcomeTracker,
+    )
+
     private companion object {
+        const val RAW_READER_MAX_IMAGES = 3
+        const val CAPTURE_TIMEOUT_MS = 12_000L
+        const val TAP_FOCUS_HOLD_MS = 2_000L
+        const val METADATA_INTERVAL_NS = 100_000_000L
         val FILE_NAME_FORMAT = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US)
     }
 }

@@ -24,6 +24,8 @@ class CameraCapabilityMapperTest {
                 sensitivityRange = RawIntRange(50, 6400),
                 exposureTimeRange = RawLongRange(100_000, 30_000_000_000),
                 maxFrameDuration = 33_333_333,
+                aeCompensationRange = RawIntRange(-6, 6),
+                aeCompensationStep = RawRational(1, 3),
                 minimumFocusDistance = 10f,
                 focalLengths = listOf(5.6f),
                 apertures = listOf(1.8f),
@@ -32,6 +34,12 @@ class CameraCapabilityMapperTest {
                 awbModes = listOf(1),
                 targetFpsRanges = listOf(RawFpsRange(15, 30)),
                 maxDigitalZoom = null,
+                zoomRatioRange = RawFloatRange(0.7f, 8f),
+                aeLockAvailable = true,
+                awbLockAvailable = true,
+                maxAfMeteringRegions = 1,
+                maxAeMeteringRegions = 2,
+                maxAwbMeteringRegions = 0,
                 requestCapabilities = listOf(
                     CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW,
                     CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR,
@@ -50,6 +58,9 @@ class CameraCapabilityMapperTest {
         assertTrue(CameraCapability.RAW in mapped.capabilities)
         assertTrue(CameraCapability.MANUAL_SENSOR in mapped.capabilities)
         assertTrue(mapped.opticalStabilization)
+        assertEquals(1.0 / 3.0, mapped.aeCompensationStep?.value ?: 0.0, 0.0001)
+        assertEquals(0.7f, mapped.zoomRatioRange?.lower ?: 0f, 0.001f)
+        assertTrue(mapped.aeLockAvailable)
         assertEquals(CameraOutputFormat.JPEG, mapped.outputs.single().format)
         assertEquals(12_000_000L, mapped.outputs.single().sizes.single().area)
     }

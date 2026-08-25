@@ -3,16 +3,17 @@
 Roadmap phases are gates, not parallel feature lists. A phase starts only after the previous
 foundation is built, tested, device-validated, and reviewed.
 
-## PH1 — Camera Foundation (current)
+## PH1 — Camera Foundation (complete)
 
 Camera2 discovery, capability domain model, lifecycle preview, camera switching, JPEG/MediaStore,
 state/error/thread boundaries, capability UI, `ImageFrame`/pipeline/filter contracts, JNI proof,
 C plugin ABI foundation, tests, and architecture documentation.
 
-## PH2 — Pro Controls + RAW
+## PH2 — Pro Controls + RAW (current)
 
-Manual focus/exposure/ISO/white-balance controls, request-state validation, RAW/DNG capture, and
-capture metadata. Preview stability remains the gate.
+Capability-driven focus/exposure/ISO/white-balance/zoom/lock controls, shared preview/still
+request state, observed metadata, RAW/DNG capture, multi-output status, and bounded timestamp
+pairing. Real-device preview, HAL control, and DNG validation remain the exit gate before PH3.
 
 ## PH3 — Filter Engine + LUT
 

@@ -2,6 +2,7 @@ package top.r2dblog.justcamera.camera.application
 
 import android.content.Context
 import android.graphics.SurfaceTexture
+import top.r2dblog.justcamera.camera.control.CameraControlState
 import top.r2dblog.justcamera.camera.device.CameraEngine
 
 class CameraController(context: Context) {
@@ -12,6 +13,11 @@ class CameraController(context: Context) {
     val cameras = engine.cameras
     val selectedCamera = engine.selectedCamera
     val previewSize = engine.previewSize
+    val controlState = engine.controlState
+    val controlCapabilities = engine.controlCapabilities
+    val controlError = engine.controlError
+    val captureMetadata = engine.captureMetadata
+    val rawCaptureAvailable = engine.rawCaptureAvailable
 
     fun updatePermissions(cameraGranted: Boolean, storageGranted: Boolean) =
         engine.updatePermissions(cameraGranted, storageGranted)
@@ -33,5 +39,9 @@ class CameraController(context: Context) {
     fun detachPreview(texture: SurfaceTexture) = engine.detachPreview(texture)
     fun switchCamera() = engine.switchCamera()
     fun selectCamera(cameraId: String) = engine.selectCamera(cameraId)
+    fun updateControls(state: CameraControlState) = engine.updateControls(state)
+    fun focusAt(normalizedX: Float, normalizedY: Float) =
+        engine.focusAt(normalizedX, normalizedY)
+    fun capture() = engine.capture()
     fun captureJpeg() = engine.captureJpeg()
 }

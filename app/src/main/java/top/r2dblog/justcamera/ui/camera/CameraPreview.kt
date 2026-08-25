@@ -7,7 +7,9 @@ import android.view.Surface
 import android.view.TextureView
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.foundation.gestures.detectTapGestures
 import top.r2dblog.justcamera.camera.application.CameraController
 import top.r2dblog.justcamera.camera.model.ImageSize
 import kotlin.math.max
@@ -19,7 +21,16 @@ fun CameraPreview(
     modifier: Modifier = Modifier,
 ) {
     AndroidView(
-        modifier = modifier,
+        modifier = modifier.pointerInput(cameraController) {
+            detectTapGestures { offset ->
+                if (size.width > 0 && size.height > 0) {
+                    cameraController.focusAt(
+                        offset.x / size.width,
+                        offset.y / size.height,
+                    )
+                }
+            }
+        },
         factory = { context ->
             TextureView(context).apply {
                 surfaceTextureListener = object : TextureView.SurfaceTextureListener {
