@@ -34,6 +34,8 @@ import androidx.compose.ui.unit.sp
 import top.r2dblog.justcamera.camera.application.CameraController
 import top.r2dblog.justcamera.camera.model.CameraState
 import top.r2dblog.justcamera.camera.model.CaptureStatus
+import top.r2dblog.justcamera.hdr.capture.HdrMode
+import top.r2dblog.justcamera.hdr.capture.HdrStatus
 import top.r2dblog.justcamera.nativecore.NativeCore
 
 @Composable
@@ -54,6 +56,9 @@ fun CameraScreen(
     val controlCapabilities by cameraController.controlCapabilities.collectAsState()
     val captureMetadata by cameraController.captureMetadata.collectAsState()
     val controlError by cameraController.controlError.collectAsState()
+    val hdrMode by cameraController.hdrMode.collectAsState()
+    val hdrCapability by cameraController.hdrCapability.collectAsState()
+    val hdrStatus by cameraController.hdrStatus.collectAsState()
     val nativeVersion = remember {
         runCatching(NativeCore::version).getOrElse { "Native core unavailable" }
     }
@@ -136,7 +141,18 @@ fun CameraScreen(
                 onStateChange = cameraController::updateControls,
             )
             Spacer(Modifier.height(8.dp))
-            CaptureMessage(captureStatus)
+            if (hdrMode == HdrMode.ON || hdrStatus is HdrStatus.Failed) {
+                HdrCaptureMessage(hdrStatus, hdrCapability?.reason)
+            } else {
+                CaptureMessage(captureStatus)
+                hdrCapability?.let { capability ->
+                    Text(
+                        text = "HDR ${capability.level} · ${capability.reason}",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 10.sp,
+                    )
+                }
+            }
             Spacer(Modifier.height(12.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -144,15 +160,20 @@ fun CameraScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 CameraActionButton(
-                    text = "INFO",
-                    enabled = true,
-                    onClick = openCapabilities,
+                    text = if (hdrMode == HdrMode.ON) "HDR ON" else "HDR OFF",
+                    enabled = hdrMode == HdrMode.ON || hdrCapability?.captureEnabled == true,
+                    onClick = {
+                        cameraController.setHdrMode(
+                            if (hdrMode == HdrMode.ON) HdrMode.OFF else HdrMode.ON,
+                        )
+                    },
                 )
                 Button(
                     onClick = cameraController::capture,
-                    enabled = state is CameraState.Previewing && storagePermissionGranted &&
+                    enabled = state is CameraState.Previewing &&
+                        (storagePermissionGranted || hdrMode == HdrMode.ON) &&
                         captureStatus !is CaptureStatus.Capturing &&
-                        captureStatus !is CaptureStatus.Saving,
+                        captureStatus !is CaptureStatus.Saving && !hdrStatus.isBusy(),
                     shape = CircleShape,
                     contentPadding = ButtonDefaults.ContentPadding,
                     colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
@@ -243,6 +264,50 @@ private fun CaptureMessage(status: CaptureStatus) {
         Color.White.copy(alpha = 0.78f)
     }
     Text(message, color = color, fontSize = 12.sp)
+}
+
+@Composable
+private fun HdrCaptureMessage(status: HdrStatus, capabilityReason: String?) {
+    val message = when (status) {
+        HdrStatus.Idle -> "HDR ready · 3-frame YUV bracket"
+        HdrStatus.Planning -> "Planning HDR exposure bracket…"
+        is HdrStatus.Capturing ->
+            "HDR capture ${status.capturedFrames}/${status.totalFrames}…"
+        is HdrStatus.Converting -> "Converting ${status.frameCount} YUV frames…"
+        HdrStatus.Aligning -> "Aligning HDR bracket…"
+        HdrStatus.Merging -> "Merging scene-linear HDR…"
+        HdrStatus.ToneMapping -> "Tone mapping HDR…"
+        is HdrStatus.Completed -> "HDR ready ${status.width}×${status.height}"
+        is HdrStatus.Failed -> if (status.fallbackToStandard) {
+            "${status.reason} · standard mode restored"
+        } else {
+            status.reason
+        }
+        HdrStatus.Cancelled -> "HDR capture cancelled"
+    }
+    val resolved = if (status is HdrStatus.Idle && capabilityReason != null) {
+        "$message · $capabilityReason"
+    } else {
+        message
+    }
+    Text(
+        text = resolved,
+        color = if (status is HdrStatus.Failed) MaterialTheme.colorScheme.error else {
+            Color.White.copy(alpha = 0.78f)
+        },
+        fontSize = 12.sp,
+    )
+}
+
+private fun HdrStatus.isBusy(): Boolean = when (this) {
+    HdrStatus.Planning,
+    is HdrStatus.Capturing,
+    is HdrStatus.Converting,
+    HdrStatus.Aligning,
+    HdrStatus.Merging,
+    HdrStatus.ToneMapping,
+    -> true
+    else -> false
 }
 
 private fun stateLabel(state: CameraState): String = when (state) {

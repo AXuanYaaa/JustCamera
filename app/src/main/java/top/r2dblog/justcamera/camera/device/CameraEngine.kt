@@ -9,6 +9,7 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
+import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
@@ -35,6 +36,7 @@ import top.r2dblog.justcamera.camera.capability.CameraCapabilityScanner
 import top.r2dblog.justcamera.camera.capture.CapturePreviewRecoveryPolicy
 import top.r2dblog.justcamera.camera.capture.StillCaptureCoordinator
 import top.r2dblog.justcamera.camera.capture.StillCapturePlan
+import top.r2dblog.justcamera.camera.hdr.HdrCaptureCoordinator
 import top.r2dblog.justcamera.camera.control.CameraControlState
 import top.r2dblog.justcamera.camera.control.CameraRequestController
 import top.r2dblog.justcamera.camera.control.CaptureModeResolver
@@ -62,6 +64,15 @@ import top.r2dblog.justcamera.camera.session.CameraRecoveryPolicy
 import top.r2dblog.justcamera.camera.session.CameraSessionController
 import top.r2dblog.justcamera.camera.session.OrientationCalculator
 import top.r2dblog.justcamera.camera.session.PreviewSizeSelector
+import top.r2dblog.justcamera.hdr.capture.HdrBracketConstraints
+import top.r2dblog.justcamera.hdr.capture.HdrCapabilityAssessment
+import top.r2dblog.justcamera.hdr.capture.HdrCapabilityPolicy
+import top.r2dblog.justcamera.hdr.capture.HdrCapturePlan
+import top.r2dblog.justcamera.hdr.capture.HdrCaptureStartResult
+import top.r2dblog.justcamera.hdr.capture.HdrExposureBaseline
+import top.r2dblog.justcamera.hdr.capture.HdrMode
+import top.r2dblog.justcamera.hdr.capture.HdrRequestTag
+import top.r2dblog.justcamera.hdr.capture.HdrStatus
 import top.r2dblog.justcamera.logging.JcLog
 import top.r2dblog.justcamera.logging.LogCategory
 import java.util.concurrent.Executor
@@ -87,6 +98,17 @@ internal class CameraEngine(context: Context) {
         onCaptureTerminal = ::returnToPreviewAfterCapture,
     )
     val captureStatus: StateFlow<CaptureStatus> = stillCaptureCoordinator.status
+    private val hdrCaptureCoordinator = HdrCaptureCoordinator(
+        cameraLooper = cameraThread.looper,
+        cameraHandler = cameraHandler,
+        onCaptureTerminal = ::returnToPreviewAfterCapture,
+    )
+    val hdrStatus: StateFlow<HdrStatus> = hdrCaptureCoordinator.status
+    val hdrLastOutput = hdrCaptureCoordinator.lastOutput
+    private val _hdrMode = MutableStateFlow(HdrMode.OFF)
+    val hdrMode: StateFlow<HdrMode> = _hdrMode.asStateFlow()
+    private val _hdrCapability = MutableStateFlow<HdrCapabilityAssessment?>(null)
+    val hdrCapability: StateFlow<HdrCapabilityAssessment?> = _hdrCapability.asStateFlow()
     private val _cameras = MutableStateFlow<List<CameraCapabilities>>(emptyList())
     val cameras: StateFlow<List<CameraCapabilities>> = _cameras.asStateFlow()
     private val _selectedCamera = MutableStateFlow<CameraCapabilities?>(null)
@@ -158,6 +180,7 @@ internal class CameraEngine(context: Context) {
         cameraHandler.post {
             closeResources(emitClosed = true)
             stillCaptureCoordinator.release()
+            hdrCaptureCoordinator.release()
             cameraThread.quitSafely()
             imageThread.quitSafely()
         }
@@ -276,6 +299,23 @@ internal class CameraEngine(context: Context) {
 
     fun captureJpeg() = capture()
 
+    fun setHdrMode(mode: HdrMode) {
+        cameraHandler.post {
+            if (mode == _hdrMode.value) return@post
+            val assessment = _selectedCamera.value?.let(HdrCapabilityPolicy::assess)
+            if (mode == HdrMode.ON && assessment?.captureEnabled != true) {
+                val reason = assessment?.reason ?: "No selected camera is available for HDR"
+                hdrCaptureCoordinator.rejectTopology(reason)
+                _hdrMode.value = HdrMode.OFF
+                return@post
+            }
+            if (stillCaptureCoordinator.isBusy() || hdrCaptureCoordinator.isBusy()) return@post
+            closeResources(emitClosed = true)
+            _hdrMode.value = mode
+            if (running) openSelectedCameraIfReady()
+        }
+    }
+
     private fun selectCameraOnCameraThread(camera: CameraCapabilities) {
         checkCameraThread()
         rawTopologyFallback.select(camera.cameraId)
@@ -288,6 +328,7 @@ internal class CameraEngine(context: Context) {
         }
         _captureMetadata.value = CameraCaptureMetadata()
         _controlError.value = null
+        updateHdrCapability(camera)
     }
 
     private fun ensureDiscoveryAndOpen() {
@@ -326,6 +367,7 @@ internal class CameraEngine(context: Context) {
         cameras.firstOrNull { it.facing == CameraFacing.BACK } ?: cameras.firstOrNull()
 
     private fun ensureRequestController(camera: CameraCapabilities): CameraRequestController {
+        updateHdrCapability(camera)
         rawTopologyFallback.select(camera.cameraId)
         val current = requestController
         if (current != null && _selectedCamera.value?.cameraId == camera.cameraId) return current
@@ -335,6 +377,15 @@ internal class CameraEngine(context: Context) {
             }
             requestController = controller
             publishRequestedControls(controller)
+        }
+    }
+
+    private fun updateHdrCapability(camera: CameraCapabilities) {
+        val assessment = HdrCapabilityPolicy.assess(camera)
+        _hdrCapability.value = assessment
+        if (_hdrMode.value == HdrMode.ON && !assessment.captureEnabled) {
+            _hdrMode.value = HdrMode.OFF
+            hdrCaptureCoordinator.rejectTopology(assessment.reason)
         }
     }
 
@@ -445,6 +496,25 @@ internal class CameraEngine(context: Context) {
         val capabilities = _selectedCamera.value
         if (previewSurface == null || !previewSurface.isValid || capabilities == null) {
             failAndClose(CameraError(CameraErrorCode.INVALID_SURFACE, "Preview surface is invalid"))
+            return
+        }
+        if (_hdrMode.value == HdrMode.ON) {
+            val assessment = _hdrCapability.value
+            if (assessment?.captureEnabled == true && assessment.processingSize != null) {
+                configureHdrSession(
+                    device,
+                    cameraId,
+                    callbackGeneration,
+                    previewSurface,
+                    assessment,
+                )
+            } else {
+                fallbackFromHdrTopology(
+                    cameraId,
+                    assessment?.reason ?: "HDR capability assessment is unavailable",
+                    null,
+                )
+            }
             return
         }
         val jpegSize = capabilities.sizesFor(CameraOutputFormat.JPEG).maxByOrNull { it.area }
@@ -578,6 +648,111 @@ internal class CameraEngine(context: Context) {
                 ),
             )
         }
+    }
+
+    private fun configureHdrSession(
+        device: CameraDevice,
+        cameraId: String,
+        callbackGeneration: Long,
+        previewSurface: Surface,
+        assessment: HdrCapabilityAssessment,
+    ) {
+        val size = assessment.processingSize ?: run {
+            fallbackFromHdrTopology(cameraId, "No bounded HDR YUV size is available", null)
+            return
+        }
+        try {
+            val hdrReader = ImageReader.newInstance(
+                size.width,
+                size.height,
+                ImageFormat.YUV_420_888,
+                HDR_READER_MAX_IMAGES,
+            ).apply {
+                setOnImageAvailableListener(
+                    { reader ->
+                        hdrCaptureCoordinator.onYuvImageAvailable(reader, callbackGeneration)
+                    },
+                    imageHandler,
+                )
+            }
+            sessionController.replaceHdrImageReader(
+                hdrReader,
+                hdrCaptureCoordinator::retireReader,
+            )
+            hdrCaptureCoordinator.registerReader(hdrReader, callbackGeneration)
+            transition(CameraEvent.Configure(cameraId))
+            val sessionCallback = object : CameraCaptureSession.StateCallback() {
+                override fun onConfigured(session: CameraCaptureSession) {
+                    if (!isCurrentCallback(cameraId, callbackGeneration) ||
+                        device !== sessionController.cameraDevice || !running ||
+                        _hdrMode.value != HdrMode.ON
+                    ) {
+                        sessionController.closeUnownedSession(session)
+                        return
+                    }
+                    sessionController.adoptCaptureSession(session)
+                    setEffectiveRawAvailability(false)
+                    startPreview(device, session, previewSurface, cameraId)
+                }
+
+                override fun onConfigureFailed(session: CameraCaptureSession) {
+                    sessionController.closeUnownedSession(session)
+                    if (!isCurrentCallback(cameraId, callbackGeneration)) return
+                    fallbackFromHdrTopology(
+                        cameraId,
+                        "Camera $cameraId rejected preview + bounded YUV HDR; retrying standard capture",
+                        null,
+                    )
+                }
+            }
+            val surfaces = listOf(previewSurface, hdrReader.surface)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                device.createCaptureSession(
+                    SessionConfiguration(
+                        SessionConfiguration.SESSION_REGULAR,
+                        surfaces.map(::OutputConfiguration),
+                        Executor { runnable -> cameraHandler.post(runnable) },
+                        sessionCallback,
+                    ),
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                device.createCaptureSession(surfaces, sessionCallback, cameraHandler)
+            }
+        } catch (error: CameraAccessException) {
+            fallbackFromHdrTopology(
+                cameraId,
+                "Unable to configure HDR session for camera $cameraId",
+                error,
+            )
+        } catch (error: IllegalArgumentException) {
+            fallbackFromHdrTopology(
+                cameraId,
+                "Camera $cameraId rejected the HDR YUV output topology",
+                error,
+            )
+        } catch (error: IllegalStateException) {
+            fallbackFromHdrTopology(
+                cameraId,
+                "Camera $cameraId closed while configuring HDR",
+                error,
+            )
+        }
+    }
+
+    private fun fallbackFromHdrTopology(cameraId: String, message: String, cause: Throwable?) {
+        checkCameraThread()
+        _hdrMode.value = HdrMode.OFF
+        failAndClose(
+            CameraError(
+                CameraErrorCode.SESSION_CONFIGURATION_FAILED,
+                message,
+                cause,
+                recoverable = true,
+            ),
+        )
+        hdrCaptureCoordinator.rejectTopology(message)
+        JcLog.warn(LogCategory.CAMERA, "HDR topology disabled for camera $cameraId tenure", cause)
     }
 
     private fun startPreview(
@@ -735,6 +910,11 @@ internal class CameraEngine(context: Context) {
 
     private fun captureOnCameraThread() {
         checkCameraThread()
+        if (_hdrMode.value == HdrMode.ON) {
+            captureHdrOnCameraThread()
+            return
+        }
+        hdrCaptureCoordinator.dismissFailure()
         val device = sessionController.cameraDevice
         val session = sessionController.captureSession
         val jpegReader = sessionController.imageReader
@@ -821,6 +1001,137 @@ internal class CameraEngine(context: Context) {
             )
         }
     }
+
+    private fun captureHdrOnCameraThread() {
+        checkCameraThread()
+        val device = sessionController.cameraDevice
+        val session = sessionController.captureSession
+        val hdrReader = sessionController.hdrImageReader
+        val camera = _selectedCamera.value
+        val controller = requestController
+        val assessment = _hdrCapability.value
+        if (device == null || session == null || hdrReader == null || camera == null ||
+            controller == null || assessment?.captureEnabled != true
+        ) {
+            hdrCaptureCoordinator.rejectCapture("HDR session is not ready to capture")
+            return
+        }
+        if (stillCaptureCoordinator.isBusy() || hdrCaptureCoordinator.isBusy()) return
+
+        val metadata = _captureMetadata.value
+        val exposureTime = metadata.exposureTimeNanos
+        val sensitivity = metadata.sensitivityIso
+        if (exposureTime == null || sensitivity == null) {
+            hdrCaptureCoordinator.rejectCapture(
+                "Waiting for a preview result with actual exposure time and ISO",
+            )
+            return
+        }
+        val start = hdrCaptureCoordinator.beginCapture(
+            generation = cameraCallbackGeneration,
+            baseline = HdrExposureBaseline(
+                exposureTimeNanos = exposureTime,
+                sensitivityIso = sensitivity,
+                frameDurationNanos = metadata.frameDurationNanos,
+            ),
+            constraints = HdrBracketConstraints(
+                manualSensor = camera.supportsManualSensor,
+                sensitivityRange = camera.sensitivityRange,
+                exposureTimeRangeNanos = camera.exposureTimeRangeNanos,
+                maxFrameDurationNanos = camera.maxFrameDurationNanos,
+                minimumFrameDurationNanos = assessment.minimumFrameDurationNanos,
+            ),
+            outputRotationDegrees = OrientationCalculator.jpegOrientation(
+                camera.sensorOrientation,
+                displayRotationDegrees,
+                camera.facing,
+            ),
+        )
+        val plan = when (start) {
+            is HdrCaptureStartResult.Started -> start.plan
+            is HdrCaptureStartResult.Rejected -> return
+        }
+
+        try {
+            val requests = plan.bracket.entries.map { entry ->
+                device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                    addTarget(hdrReader.surface)
+                    controller.apply(this)
+                    set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_OFF)
+                    set(CaptureRequest.SENSOR_EXPOSURE_TIME, entry.exposureTimeNanos)
+                    set(CaptureRequest.SENSOR_SENSITIVITY, entry.sensitivityIso)
+                    set(CaptureRequest.SENSOR_FRAME_DURATION, entry.frameDurationNanos)
+                    if (camera.awbLockAvailable) {
+                        set(CaptureRequest.CONTROL_AWB_LOCK, true)
+                    }
+                    setTag(HdrRequestTag(plan.token, entry.frameIndex))
+                }.build()
+            }
+            transition(CameraEvent.CaptureStarted(camera.cameraId))
+            val callback = hdrCaptureCallback(plan)
+            val sequenceIds = if (assessment.burstCapture) {
+                listOf(session.captureBurst(requests, callback, cameraHandler))
+            } else {
+                requests.map { request -> session.capture(request, callback, cameraHandler) }
+            }
+            hdrCaptureCoordinator.onSequencesSubmitted(plan, sequenceIds)
+        } catch (error: CameraAccessException) {
+            hdrCaptureCoordinator.onCaptureRequestFailed(
+                plan,
+                "Camera rejected the HDR bracket",
+                error,
+            )
+        } catch (error: IllegalStateException) {
+            hdrCaptureCoordinator.onCaptureRequestFailed(
+                plan,
+                "HDR capture session closed before the bracket was submitted",
+                error,
+            )
+        } catch (error: IllegalArgumentException) {
+            hdrCaptureCoordinator.onCaptureRequestFailed(
+                plan,
+                "Camera rejected the HDR bracket controls or YUV target",
+                error,
+            )
+        }
+    }
+
+    private fun hdrCaptureCallback(plan: HdrCapturePlan) =
+        object : CameraCaptureSession.CaptureCallback() {
+            override fun onCaptureCompleted(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                result: TotalCaptureResult,
+            ) {
+                val tag = request.tag as? HdrRequestTag ?: return
+                if (tag.token != plan.token || !hdrCaptureCoordinator.isActive(plan)) return
+                publishMetadata(result, throttled = false)
+                hdrCaptureCoordinator.onCaptureResult(plan, tag.frameIndex, result)
+            }
+
+            override fun onCaptureFailed(
+                session: CameraCaptureSession,
+                request: CaptureRequest,
+                failure: CaptureFailure,
+            ) {
+                hdrCaptureCoordinator.onCaptureRequestFailed(
+                    plan,
+                    "HDR bracket frame failed (reason=${failure.reason}, frame=${failure.frameNumber})",
+                    null,
+                )
+            }
+
+            override fun onCaptureSequenceAborted(
+                session: CameraCaptureSession,
+                sequenceId: Int,
+            ) {
+                hdrCaptureCoordinator.onCaptureRequestFailed(
+                    plan,
+                    "HDR bracket sequence was aborted",
+                    null,
+                )
+            }
+        }
 
     private fun stillCaptureCallback(plan: StillCapturePlan) =
         object : CameraCaptureSession.CaptureCallback() {
@@ -925,7 +1236,11 @@ internal class CameraEngine(context: Context) {
         tapFocusResetRunnable = null
         cameraCallbackGeneration++
         stillCaptureCoordinator.cancelActiveCapture(resetStatus = true)
-        sessionController.closeAll(stillCaptureCoordinator::retireRawReader)
+        hdrCaptureCoordinator.cancelActiveCapture(resetStatus = true)
+        sessionController.closeAll(
+            stillCaptureCoordinator::retireRawReader,
+            hdrCaptureCoordinator::retireReader,
+        )
         activeCharacteristics = null
         _previewSize.value = null
         _rawCaptureAvailable.value = false
@@ -946,7 +1261,11 @@ internal class CameraEngine(context: Context) {
         tapFocusResetRunnable = null
         cameraCallbackGeneration++
         stillCaptureCoordinator.cancelActiveCapture(resetStatus = true)
-        sessionController.closeAll(stillCaptureCoordinator::retireRawReader)
+        hdrCaptureCoordinator.cancelActiveCapture(resetStatus = true)
+        sessionController.closeAll(
+            stillCaptureCoordinator::retireRawReader,
+            hdrCaptureCoordinator::retireReader,
+        )
         activeCharacteristics = null
         _previewSize.value = null
         _rawCaptureAvailable.value = false
@@ -1025,6 +1344,7 @@ internal class CameraEngine(context: Context) {
 
     private companion object {
         const val RAW_READER_MAX_IMAGES = 3
+        const val HDR_READER_MAX_IMAGES = 4
         const val TAP_FOCUS_HOLD_MS = 2_000L
         const val METADATA_INTERVAL_NS = 100_000_000L
     }

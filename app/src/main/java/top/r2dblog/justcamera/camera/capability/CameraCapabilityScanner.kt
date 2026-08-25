@@ -51,14 +51,21 @@ class CameraCapabilityScanner(private val cameraManager: CameraManager) {
 
     private fun CameraCharacteristics.toRaw(): RawCameraCharacteristics {
         val streamMap = get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val outputs = (streamMap?.outputFormats ?: intArrayOf())
-            .map { format ->
-                RawOutput(
-                    format,
-                    (streamMap?.getOutputSizes(format) ?: emptyArray())
-                        .map { RawSize(it.width, it.height) },
-                )
-            }
+        val outputs = (streamMap?.outputFormats ?: intArrayOf()).map { format ->
+            val platformSizes = streamMap?.getOutputSizes(format) ?: emptyArray()
+            RawOutput(
+                format,
+                platformSizes.map { RawSize(it.width, it.height) },
+                platformSizes.mapNotNull { size ->
+                    val duration = try {
+                        streamMap?.getOutputMinFrameDuration(format, size) ?: 0L
+                    } catch (_: IllegalArgumentException) {
+                        0L
+                    }
+                    duration.takeIf { it > 0L }?.let { RawSize(size.width, size.height) to it }
+                }.toMap(),
+            )
+        }
 
         return RawCameraCharacteristics(
             lensFacing = get(CameraCharacteristics.LENS_FACING),
@@ -124,6 +131,7 @@ class CameraCapabilityScanner(private val cameraManager: CameraManager) {
                 emptySet()
             },
             outputs = outputs,
+            syncMaxLatency = get(CameraCharacteristics.SYNC_MAX_LATENCY),
         )
     }
 

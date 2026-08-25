@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.SurfaceTexture
 import top.r2dblog.justcamera.camera.control.CameraControlState
 import top.r2dblog.justcamera.camera.device.CameraEngine
+import top.r2dblog.justcamera.hdr.capture.HdrMode
 
 class CameraController(context: Context) {
     private val engine = CameraEngine(context)
@@ -18,6 +19,10 @@ class CameraController(context: Context) {
     val controlError = engine.controlError
     val captureMetadata = engine.captureMetadata
     val rawCaptureAvailable = engine.rawCaptureAvailable
+    val hdrMode = engine.hdrMode
+    val hdrCapability = engine.hdrCapability
+    val hdrStatus = engine.hdrStatus
+    val hdrLastOutput = engine.hdrLastOutput
 
     fun updatePermissions(cameraGranted: Boolean, storageGranted: Boolean) =
         engine.updatePermissions(cameraGranted, storageGranted)
@@ -44,4 +49,5 @@ class CameraController(context: Context) {
         engine.focusAt(normalizedX, normalizedY)
     fun capture() = engine.capture()
     fun captureJpeg() = engine.captureJpeg()
+    fun setHdrMode(mode: HdrMode) = engine.setHdrMode(mode)
 }

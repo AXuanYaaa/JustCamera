@@ -69,8 +69,12 @@ object CameraCapabilityMapper {
                     format = mapOutputFormat(output.format),
                     platformFormat = output.format,
                     sizes = output.sizes.map { ImageSize(it.width, it.height) },
+                    minimumFrameDurationNanos = output.minimumFrameDurationNanos.mapKeys {
+                        ImageSize(it.key.width, it.key.height)
+                    },
                 )
             },
+            syncMaxLatency = raw.syncMaxLatency,
         )
 
     private fun mapFacing(value: Int?): CameraFacing = when (value) {

@@ -47,5 +47,27 @@ blend, R-fast/G-next/B-slowest indexing, and straight-alpha preservation. JVM/de
 absolute tolerance of `2e-5`; standalone core tests use `1e-5`. Any later SIMD implementation must
 pass the same oracle vectors or explicitly version a deliberate formula change.
 
-PH4 does not reinterpret this display-referred bounded frame as scene-linear or HDR. PH5 must add a
-distinct representation for wider range rather than changing these semantics in place.
+PH5 does not reinterpret this display-referred bounded frame. It adds `SceneLinearFrame` with
+sRGB/BT.709 primaries, linear-light Float32 RGB, explicit packed row stride, timestamp/metadata,
+and exposure-normalization metadata. All values must be finite and non-negative; negative values
+are rejected, and positive values above 1 are preserved through normalization and merge.
+
+```text
+Camera2 YUV_420_888 (BT.601 limited-range interpretation)
+    ↓ YUV matrix → encoded sRGB channels
+inverse sRGB transfer
+    ↓ ISP-derived linear RGB
+divide by actual (shutter × ISO) exposure ratio
+    ↓ SceneLinearFrame, values may exceed 1
+alignment + motion-aware radiance merge
+    ↓ scene-referred HDR approximation
+luminance-aware global Reinhard tone map
+    ↓ clamp only here
+PH3/PH4 display-referred linear-sRGB RgbFloatFrame [0,1]
+```
+
+The YUV matrix, RGB primaries, and transfer function are separate parts of this contract. Camera
+YUV has already passed vendor ISP color, denoise, sharpening, and tone behavior, so dividing by
+shutter × ISO is a practical application-level approximation rather than calibrated raw radiance.
+ISO gain is not perfectly linear across cameras. Future RAW HDR needs demosaic, black/white levels,
+camera matrices, white balance, and a distinct calibrated path; DNG behavior remains untouched.

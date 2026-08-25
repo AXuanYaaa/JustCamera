@@ -1,6 +1,6 @@
 # Architecture
 
-## PH4 shape
+## PH5 shape
 
 JustCamera starts as one Android application module. Boundaries are packages with concrete
 behavior rather than empty Gradle modules; each top-level boundary can later move to a separate
@@ -17,6 +17,14 @@ request/control policy   capability mapping + still capture coordination
 (`CameraRequestController`)  (`StillCaptureCoordinator` + RAW leases)
     ↓ platform adapters
 Camera2 / ImageReader / DngCreator / MediaStore
+
+HDR mode: CameraEngine request/session orchestration
+    ↓ Preview + bounded YUV session
+HdrCaptureCoordinator → copied owned YUV + actual result metadata
+    ↓
+HdrProcessingPipeline → normalize → align → merge → tone map
+    ↓
+SceneLinearFrame (>1 allowed) → RgbFloatFrame ([0,1]) → PH3/PH4 FilterEngine
 
 RGB working frame
     ↓
@@ -67,6 +75,13 @@ private-storage `.so`
 9. Kotlin calls the built-in C++ core through a narrow internal JNI/direct-buffer boundary.
    `nativecore` owns load/version/capability diagnostics. This protocol is not the C plugin ABI,
    and built-ins are linked normally rather than routed through `dlopen`.
+10. `camera/hdr/HdrCaptureCoordinator` owns only one HDR token, bounded timestamp pairing,
+    timeout, copied-frame collection, cancellation, processing progress, and terminal publication.
+    `CameraEngine` still owns the Camera2 state and submits requests; HDR processing classes have
+    no Camera2 dependency.
+11. `SceneLinearFrame` is a distinct scene-referred approximation with finite non-negative Float32
+    RGB and no upper clamp. It cannot enter PH3/PH4. Only `ReinhardToneMapper` produces the
+    normalized display-referred `RgbFloatFrame` accepted by the existing FilterEngine.
 
 ## State and errors
 
@@ -84,19 +99,19 @@ resources have been closed; a recoverable Error is therefore also a valid source
 - **Camera thread (`JustCamera-Camera`):** device/session creation, all request mutations, state
   callbacks, result metadata mapping, and deterministic camera resource ownership.
 - **Image acquisition thread (`JustCamera-ImageAcquire`):** acquires JPEG/RAW outputs. JPEG bytes
-  are copied promptly; a paired RAW `Image` transfers to the DNG writer. No storage I/O runs here.
+  are copied promptly; a paired RAW `Image` transfers to the DNG writer. HDR YUV planes and their
+  strides are copied immediately into immutable owned buffers, then the Android `Image` closes.
 - **I/O dispatcher:** MediaStore insert/write/finalization and `DngCreator.writeImage`.
-- **Processing dispatcher:** filter-chain validation, Kotlin reference loops, direct-buffer
-  preparation, and synchronous native processing. It never runs on the UI or camera thread.
-- **Future processing work:** RAW/YUV conversion, HDR and multi-frame stages use distinct owned
-  representations and must not silently widen the PH3/PH4 display-referred contract.
+- **Processing dispatcher:** HDR conversion/alignment/merge/tone map, filter-chain validation,
+  Kotlin reference loops, direct-buffer preparation, and synchronous native filter processing.
+  It never runs on the UI or camera thread.
 
 This separation keeps Camera2 callback latency independent from storage and future processing.
 
 ## Resource ownership
 
 `CameraSessionController.closeAll()` is the live-resource boundary for capture session, device,
-JPEG/RAW `ImageReader`, and preview `Surface`. Every device/session mutation checks the camera
+JPEG/RAW/HDR `ImageReader`, and preview `Surface`. Every device/session mutation checks the camera
 looper. During shutdown, the RAW reader is logically detached and transferred to
 `StillCaptureCoordinator` for retirement. A generation-aware lease count prevents physical reader
 close while an acquired image is paired or being consumed by `DngCreator`; unpaired images drain
@@ -122,6 +137,15 @@ preserve RAW through normal retry. Switching away and back creates a new tenure 
 Already-started MediaStore saves finish safely across switch, stop, error recovery, and engine
 release. The coordinator accepts no new jobs after release and cancels its scope only after all
 started jobs complete, ensuring every pending MediaStore row is published or cleaned up.
+
+HDR uses a parallel lease rule specialized for prompt copying. An acquired YUV `Image` has exactly
+one copy lease. Closing or reconfiguring the camera logically retires its reader; physical close is
+deferred only until outstanding copies close their images. Copied byte arrays, not Android Images,
+enter pairing/processing. Generation checks reject late callbacks, pairing is count- and age-bounded,
+one timeout owns terminal cleanup, and lifecycle cancellation invalidates the token and prevents
+processed output publication. Normal sessions remain Preview + JPEG + optional RAW. HDR sessions
+are deliberately Preview + bounded YUV; if this topology is rejected, all resources close, HDR is
+disabled for that attempt, and the standard topology reopens through the existing bounded retry.
 
 PH4 processing has a separate call-scoped ownership rule. Kotlin owns the immutable source frame
 and allocates one native-order direct working buffer plus optional flattened validated LUT data for

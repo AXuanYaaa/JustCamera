@@ -128,6 +128,25 @@ class RgbFloatFrame private constructor(
             copySamples = true,
         )
 
+        internal fun fromOwnedPixels(
+            width: Int,
+            height: Int,
+            layout: RgbChannelLayout,
+            pixels: FloatArray,
+            timestampNanos: Long = 0,
+            rotationDegrees: Int = 0,
+            metadata: Map<String, FrameMetadataValue> = emptyMap(),
+        ): RgbFloatFrame = RgbFloatFrame(
+            width,
+            height,
+            layout,
+            pixels,
+            timestampNanos,
+            rotationDegrees,
+            metadata,
+            copySamples = false,
+        )
+
         fun fromImageFrame(frame: ImageFrame): RgbFloatFrame {
             val layout = when (frame.format) {
                 FrameFormat.RGB_F32 -> RgbChannelLayout.RGB

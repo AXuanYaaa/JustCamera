@@ -22,16 +22,22 @@ chains, versioned presets, CPU adjustment references, compact 1D/3D LUTs, strict
 trilinear interpolation, pipeline adapter, and schema-generated configuration UI. Live Camera2
 pixel rendering and captured-image encode integration remain explicit future adapters.
 
-## PH4 — Native Image Processing (current)
+## PH4 — Native Image Processing (complete)
 
 C++20 scalar exposure/contrast/saturation/color-transfer/3D-LUT kernels, validated direct-buffer
 JNI, fused compatible runs, AUTO/Kotlin/native selection, deterministic Kotlin fallback, native
 diagnostics, parity tests, benchmark harness, and NEON capability groundwork. Hand-written SIMD,
 GPU processing, and scene-linear/HDR data remain later work.
 
-## PH5 — HDR
+## PH5 — HDR Computational Photography (current)
 
-Exposure bracketing, alignment, merge, ghost handling, tone mapping, and quality evaluation.
+Capability grading, bounded Preview + YUV topology, actual-metadata manual exposure bracketing,
+generation-safe frame/result ownership, a separate scene-linear frame domain, ISP-output
+linearization/normalization, integer translational pyramid alignment, reference-preferring ghost
+reduction, deterministic weighted radiance merge, global luminance-aware tone mapping, PH3/PH4
+handoff, diagnostics, UI progress, and synthetic correctness tests. Processed JPEG encoding, HDR
+Auto, calibrated RAW HDR, subpixel/non-rigid alignment, and real-device quality tuning remain
+future work rather than implicit PH5 claims.
 
 ## PH6 — Night Mode
 

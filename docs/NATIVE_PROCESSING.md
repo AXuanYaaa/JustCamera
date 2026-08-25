@@ -102,9 +102,15 @@ An ignored instrumentation benchmark provides manual Kotlin-reference versus nat
 at 640×480, 1920×1080, and 4000×3000. Its values are diagnostic and never correctness assertions.
 Optimization—including a first NEON kernel—must follow profiling and retain the scalar fallback.
 
-## Future phases
+## PH5 HDR native status
 
-PH5 HDR must introduce a separate scene-linear/wider-range representation before the PH4 filter
-working contract. GPU rendering, multi-frame processing, and external executable plugins are not
-part of PH4. External `.so` execution will need the separate versioned plugin ABI plus a stronger
-trust, install, and process-isolation decision; the internal JNI descriptor is not an extension API.
+PH5 HDR uses deterministic Kotlin CPU reference algorithms. No HDR operation is encoded into the
+PH4 display-filter descriptor, no HDR JNI entry point was added, and there is therefore no native
+HDR parity claim. This keeps the scene-linear multi-frame domain separate from normalized filter
+operations while reusing PH4 principles: checked dimensions, immutable inputs, bounded owned
+buffers, stage cancellation, no pointer/handle lifetime across calls, and pure algorithms outside
+Android adapters. A future native HDR API should operate on dedicated HDR frame/batch descriptors,
+retain the Kotlin reference as oracle, and add ordinary C++ tests plus JNI parity before selection.
+
+GPU rendering, night/denoise/super-resolution processing, and external executable plugins remain
+outside PH5. The internal JNI filter descriptor is not an extension API.

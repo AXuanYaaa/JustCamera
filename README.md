@@ -1,12 +1,12 @@
 # JustCamera
 
 JustCamera is an Android Camera2 foundation for a long-lived professional camera and
-computational-photography platform. The repository is currently at **PH4 — Native Image
-Processing Foundation**. It is not yet a replacement for a production system camera.
+computational-photography platform. The repository is currently at **PH5 — HDR Computational
+Photography Foundation**. It is not yet a replacement for a production system camera.
 
 ## Current status
 
-PH4 provides:
+PH5 provides everything from PH1–PH4 plus:
 
 - runtime camera permission integration and Android 8–9 legacy MediaStore permission;
 - Camera2 discovery with a project-owned capability model;
@@ -37,11 +37,23 @@ PH4 provides:
   external plugin install path;
 - host-side unit tests for control validation/math, zoom/metering, RAW policy, DNG pairing,
   capability mapping, state, geometry, pipeline, filter, and ABI logic.
+- graded HDR capability levels and a deterministic bounded YUV processing-size selector;
+- a dedicated Camera2 HDR mode using a Preview + YUV topology, actual-result-based manual
+  exposure brackets, burst/sequential submission, and clean fallback to standard capture;
+- generation-safe, timestamp-bounded YUV/result pairing with prompt plane copies and deferred
+  `ImageReader` retirement while an acquired image is being copied;
+- a separate unbounded-above `SceneLinearFrame`, BT.601 limited-range YUV conversion followed by
+  inverse sRGB, actual shutter × ISO normalization, translational pyramid alignment, motion-aware
+  weighted radiance merge, and luminance-aware Reinhard tone mapping;
+- an explicit handoff to the unchanged PH3/PH4 normalized linear-sRGB `RgbFloatFrame` contract;
+- functional HDR Off/On control, processing progress, capability/fallback reasons, timing
+  diagnostics, luminance histogram foundation, and deterministic synthetic HDR tests.
 
-PH4 does **not** provide sensor white-balance color science, RAW development/demosaic, Camera2 live
-filter rendering, automatic captured-JPEG recompression, HDR, night mode, denoise, super resolution,
-external plugin installation, active hand-written NEON kernels, or GPU processing. Those remain
-later phases.
+PH5 computational HDR is an application-level reconstruction from ISP-processed YUV, not RAW-domain
+radiance and not Android 10-bit `DynamicRangeProfiles`. It does **not** yet encode/save the derived
+HDR result, provide HDR Auto scene intelligence, RAW HDR, sensor white-balance color science, live
+filter rendering, night mode, denoise, super resolution, external plugin installation, active
+hand-written NEON kernels, or GPU processing.
 
 ## Technology and Android versions
 
@@ -77,6 +89,9 @@ The project intentionally uses one Gradle `app` module with module-ready package
 ui → camera/application → camera/device → Camera2
                    ↘ camera/control + camera/capability
                    ↘ camera/raw + camera/capture → DngCreator + MediaStore
+                   ↘ camera/hdr → owned YUV + hdr/capture
+hdr/yuv → normalization → alignment → merge → SceneLinearFrame → tone map
+                                                              ↓
 filter/api + registry + builtin + lut + preset → FilterEngine → backend selection
                                                        ├─ PH3 Kotlin oracle
                                                        └─ direct buffers → JNI → C++ scalar core
@@ -88,7 +103,7 @@ Android framework types stop at platform adapters. UI reads `CameraCapabilities`
 `CameraCharacteristics`; processing reads `ImageFrame`, never retains `android.media.Image`.
 See [Architecture](docs/ARCHITECTURE.md), [Filter engine](docs/FILTER_ENGINE.md),
 [Color pipeline](docs/COLOR_PIPELINE.md), [Native processing](docs/NATIVE_PROCESSING.md), and
-[LUT format](docs/LUT_FORMAT.md).
+[HDR pipeline](docs/HDR_PIPELINE.md).
 
 ## Roadmap
 

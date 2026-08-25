@@ -7,7 +7,11 @@ data class RawLongRange(val lower: Long, val upper: Long)
 data class RawFloatRange(val lower: Float, val upper: Float)
 data class RawRational(val numerator: Int, val denominator: Int)
 data class RawFpsRange(val lower: Int, val upper: Int)
-data class RawOutput(val format: Int, val sizes: List<RawSize>)
+data class RawOutput(
+    val format: Int,
+    val sizes: List<RawSize>,
+    val minimumFrameDurationNanos: Map<RawSize, Long> = emptyMap(),
+)
 
 data class RawCameraCharacteristics(
     val lensFacing: Int?,
@@ -39,4 +43,5 @@ data class RawCameraCharacteristics(
     val videoStabilizationModes: List<Int>,
     val physicalCameraIds: Set<String>,
     val outputs: List<RawOutput>,
+    val syncMaxLatency: Int? = null,
 )

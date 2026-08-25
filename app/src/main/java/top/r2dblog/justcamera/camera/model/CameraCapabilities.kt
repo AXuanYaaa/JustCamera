@@ -42,6 +42,7 @@ data class SupportedOutput(
     val format: CameraOutputFormat,
     val platformFormat: Int,
     val sizes: List<ImageSize>,
+    val minimumFrameDurationNanos: Map<ImageSize, Long> = emptyMap(),
 )
 
 data class CameraCapabilities(
@@ -78,6 +79,7 @@ data class CameraCapabilities(
     val videoStabilization: Boolean,
     val physicalCameraIds: Set<String>,
     val outputs: List<SupportedOutput>,
+    val syncMaxLatency: Int? = null,
 ) {
     val hasRawCapability: Boolean get() = CameraCapability.RAW in capabilities
     val supportsRaw: Boolean

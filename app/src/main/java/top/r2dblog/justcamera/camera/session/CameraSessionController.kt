@@ -25,6 +25,8 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
         private set
     var rawImageReader: ImageReader? = null
         private set
+    var hdrImageReader: ImageReader? = null
+        private set
     var previewSurface: Surface? = null
         private set
 
@@ -54,6 +56,12 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
         rawImageReader = reader
     }
 
+    fun replaceHdrImageReader(reader: ImageReader?, retirePrevious: (ImageReader) -> Unit) {
+        checkCameraThread()
+        hdrImageReader?.let(retirePrevious)
+        hdrImageReader = reader
+    }
+
     fun adoptCaptureSession(session: CameraCaptureSession) {
         checkCameraThread()
         check(captureSession == null || captureSession === session) {
@@ -76,10 +84,14 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
      * Returns true when at least one owned resource was closed or retired. RAW reader ownership is
      * transferred to [retireRawReader], which may defer physical close for an in-flight DNG lease.
      */
-    fun closeAll(retireRawReader: (ImageReader) -> Unit): Boolean {
+    fun closeAll(
+        retireRawReader: (ImageReader) -> Unit,
+        retireHdrReader: (ImageReader) -> Unit,
+    ): Boolean {
         checkCameraThread()
         val hadResources = captureSession != null || cameraDevice != null ||
-            imageReader != null || rawImageReader != null || previewSurface != null
+            imageReader != null || rawImageReader != null || hdrImageReader != null ||
+            previewSurface != null
 
         try {
             captureSession?.stopRepeating()
@@ -96,6 +108,8 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
         imageReader = null
         rawImageReader?.let(retireRawReader)
         rawImageReader = null
+        hdrImageReader?.let(retireHdrReader)
+        hdrImageReader = null
         previewSurface?.release()
         previewSurface = null
         return hadResources

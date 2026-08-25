@@ -47,7 +47,14 @@ class CameraCapabilityMapperTest {
                 opticalStabilizationModes = listOf(0, 1),
                 videoStabilizationModes = listOf(0),
                 physicalCameraIds = setOf("2", "3"),
-                outputs = listOf(RawOutput(ImageFormat.JPEG, listOf(RawSize(4000, 3000)))),
+                outputs = listOf(
+                    RawOutput(
+                        ImageFormat.JPEG,
+                        listOf(RawSize(4000, 3000)),
+                        mapOf(RawSize(4000, 3000) to 50_000_000L),
+                    ),
+                ),
+                syncMaxLatency = 2,
             ),
         )
 
@@ -63,5 +70,7 @@ class CameraCapabilityMapperTest {
         assertTrue(mapped.aeLockAvailable)
         assertEquals(CameraOutputFormat.JPEG, mapped.outputs.single().format)
         assertEquals(12_000_000L, mapped.outputs.single().sizes.single().area)
+        assertEquals(50_000_000L, mapped.outputs.single().minimumFrameDurationNanos.values.single())
+        assertEquals(2, mapped.syncMaxLatency)
     }
 }
