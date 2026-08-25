@@ -53,8 +53,8 @@ and exposure-normalization metadata. All values must be finite and non-negative;
 are rejected, and positive values above 1 are preserved through normalization and merge.
 
 ```text
-Camera2 YUV_420_888 (BT.601 limited-range interpretation)
-    ↓ YUV matrix → encoded sRGB channels
+Camera2 YUV_420_888 (default JFIF/Rec.601 full-range transform)
+    ↓ Rec.601 YUV matrix + full-byte quantization → encoded sRGB channels
 inverse sRGB transfer
     ↓ ISP-derived linear RGB
 divide by actual (shutter × ISO) exposure ratio
@@ -66,8 +66,11 @@ luminance-aware global Reinhard tone map
 PH3/PH4 display-referred linear-sRGB RgbFloatFrame [0,1]
 ```
 
-The YUV matrix, RGB primaries, and transfer function are separate parts of this contract. Camera
-YUV has already passed vendor ISP color, denoise, sharpening, and tone behavior, so dividing by
-shutter × ISO is a practical application-level approximation rather than calibrated raw radiance.
-ISO gain is not perfectly linear across cameras. Future RAW HDR needs demosaic, black/white levels,
-camera matrices, white balance, and a distinct calibrated path; DNG behavior remains untouched.
+The Rec.601 YUV matrix and full quantization range, the sRGB/Rec.709 RGB primaries, and the sRGB
+transfer function are separate parts of this contract. Default Camera2 YUV uses the JFIF/Rec.601
+full-range transform and the resulting encoded RGB is interpreted in the sRGB color space. Camera
+YUV has already passed vendor ISP color, denoise, sharpening, and tone behavior, so inverse sRGB
+followed by division by shutter × ISO produces an ISP-derived scene-linear approximation rather
+than calibrated raw-domain radiance. ISO gain is not perfectly linear across cameras. Future RAW
+HDR needs demosaic, black/white levels, camera matrices, white balance, and a distinct calibrated
+path; DNG behavior remains untouched.

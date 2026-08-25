@@ -5,7 +5,10 @@ import kotlinx.coroutines.ensureActive
 import top.r2dblog.justcamera.hdr.model.SceneLinearFrame
 import top.r2dblog.justcamera.imaging.color.ColorTransfer
 
-/** BT.601 limited-range YUV_420_888 to encoded sRGB, followed by the PH3 inverse sRGB transfer. */
+/**
+ * Camera2's default JFIF/Rec.601 full-range YUV_420_888 transform to encoded sRGB, followed by
+ * inverse sRGB transfer into the ISP-derived linear-sRGB HDR input domain.
+ */
 object Yuv420Converter {
     suspend fun toSceneLinear(input: OwnedYuvFrame): SceneLinearFrame {
         val output = FloatArray(input.width * input.height * 3)
@@ -22,17 +25,17 @@ object Yuv420Converter {
                 val v = input.v.byteAt(
                     chromaRow * input.v.rowStrideBytes + chromaColumn * input.v.pixelStrideBytes,
                 )
-                val luminance = ((y - 16f) / 219f).coerceIn(0f, 1f)
-                val cb = (u - 128f) / 224f
-                val cr = (v - 128f) / 224f
+                val luminance = y / BYTE_RANGE
+                val cb = (u - CHROMA_CENTER) / BYTE_RANGE
+                val cr = (v - CHROMA_CENTER) / BYTE_RANGE
                 output[outputOffset++] = ColorTransfer.srgbToLinear(
-                    (luminance + 1.402f * cr).coerceIn(0f, 1f),
+                    (luminance + RED_CR * cr).coerceIn(0f, 1f),
                 )
                 output[outputOffset++] = ColorTransfer.srgbToLinear(
-                    (luminance - 0.344136f * cb - 0.714136f * cr).coerceIn(0f, 1f),
+                    (luminance - GREEN_CB * cb - GREEN_CR * cr).coerceIn(0f, 1f),
                 )
                 output[outputOffset++] = ColorTransfer.srgbToLinear(
-                    (luminance + 1.772f * cb).coerceIn(0f, 1f),
+                    (luminance + BLUE_CB * cb).coerceIn(0f, 1f),
                 )
             }
         }
@@ -44,15 +47,23 @@ object Yuv420Converter {
         )
     }
 
-    internal fun limitedBt601(y: Int, u: Int, v: Int): FloatArray {
+    /** Returns encoded sRGB before inverse transfer; exposed internally for formula tests. */
+    internal fun jfifRec601FullRange(y: Int, u: Int, v: Int): FloatArray {
         require(y in 0..255 && u in 0..255 && v in 0..255)
-        val luminance = ((y - 16f) / 219f).coerceIn(0f, 1f)
-        val cb = (u - 128f) / 224f
-        val cr = (v - 128f) / 224f
+        val luminance = y / BYTE_RANGE
+        val cb = (u - CHROMA_CENTER) / BYTE_RANGE
+        val cr = (v - CHROMA_CENTER) / BYTE_RANGE
         return floatArrayOf(
-            (luminance + 1.402f * cr).coerceIn(0f, 1f),
-            (luminance - 0.344136f * cb - 0.714136f * cr).coerceIn(0f, 1f),
-            (luminance + 1.772f * cb).coerceIn(0f, 1f),
+            (luminance + RED_CR * cr).coerceIn(0f, 1f),
+            (luminance - GREEN_CB * cb - GREEN_CR * cr).coerceIn(0f, 1f),
+            (luminance + BLUE_CB * cb).coerceIn(0f, 1f),
         )
     }
+
+    private const val BYTE_RANGE = 255f
+    private const val CHROMA_CENTER = 128f
+    private const val RED_CR = 1.402f
+    private const val GREEN_CB = 0.344136f
+    private const val GREEN_CR = 0.714136f
+    private const val BLUE_CB = 1.772f
 }

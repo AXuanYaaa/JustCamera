@@ -59,10 +59,15 @@ and bounds pending timestamps by age and count. `HdrCaptureCoordinator` permits 
 ## Conversion and normalization
 
 The reference converter accepts arbitrary valid Y, U, and V row/pixel strides, including
-pixel-stride-2 chroma and odd dimensions. It interprets Camera2 YUV as BT.601 limited range, maps
-to encoded RGB, clamps only the encoded channel representation to [0,1], then applies inverse sRGB.
-Actual `SENSOR_EXPOSURE_TIME × SENSOR_SENSITIVITY` defines the exposure scalar. Each linear sample
-is divided by its ratio to the reference exposure. ISO is only an approximate sensor-gain proxy,
+pixel-stride-2 chroma and odd dimensions. The default Camera2 contract is interpreted with the
+JFIF/Rec.601 full-range transform: `Y = y/255`, `Cb = (u-128)/255`, `Cr = (v-128)/255`, then
+`R = Y + 1.402Cr`, `G = Y - 0.344136Cb - 0.714136Cr`, and `B = Y + 1.772Cb`. This Rec.601 matrix
+and full-byte quantization range are distinct from the resulting RGB interpretation: the converted
+encoded RGB is in the sRGB color space, using sRGB/Rec.709 primaries and the sRGB transfer function.
+Encoded channels are clamped to [0,1] only where the YUV transform exceeds representable sRGB,
+then inverse sRGB produces the ISP-derived linear-sRGB approximation. Actual
+`SENSOR_EXPOSURE_TIME × SENSOR_SENSITIVITY` defines the exposure scalar. Each linear sample is
+divided by its ratio to the reference exposure. ISO is only an approximate sensor-gain proxy,
 which is a documented limitation.
 
 ## Alignment, ghost confidence, and merge

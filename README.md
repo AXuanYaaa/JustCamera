@@ -42,8 +42,9 @@ PH5 provides everything from PH1–PH4 plus:
   exposure brackets, burst/sequential submission, and clean fallback to standard capture;
 - generation-safe, timestamp-bounded YUV/result pairing with prompt plane copies and deferred
   `ImageReader` retirement while an acquired image is being copied;
-- a separate unbounded-above `SceneLinearFrame`, BT.601 limited-range YUV conversion followed by
-  inverse sRGB, actual shutter × ISO normalization, translational pyramid alignment, motion-aware
+- a separate unbounded-above `SceneLinearFrame`, Camera2-default JFIF/Rec.601 full-range YUV
+  conversion to encoded sRGB followed by inverse sRGB, actual shutter × ISO normalization,
+  translational pyramid alignment, motion-aware
   weighted radiance merge, and luminance-aware Reinhard tone mapping;
 - an explicit handoff to the unchanged PH3/PH4 normalized linear-sRGB `RgbFloatFrame` contract;
 - functional HDR Off/On control, processing progress, capability/fallback reasons, timing
