@@ -25,13 +25,32 @@ class PreviewGeometryTest {
     }
 
     @Test
-    fun computesFrontAndBackJpegOrientation() {
+    fun jpegOrientationStillUsesCameraAndDisplayRotation() {
         assertEquals(0, OrientationCalculator.jpegOrientation(90, 90, CameraFacing.BACK))
         assertEquals(180, OrientationCalculator.jpegOrientation(90, 90, CameraFacing.FRONT))
     }
 
     @Test
-    fun centerCropIsUniformCenteredAndCoversEveryRequestedViewport() {
+    fun tallPortraitViewportUsesUniformCenterCropWithoutRotation() {
+        val transform = transform(
+            buffer = ImageSize(1920, 1080),
+            viewport = PreviewViewport(1080, 2400),
+            facing = CameraFacing.BACK,
+        )
+        val bounds = transform.transformedBounds
+
+        assertClose(2400f / 1080f, transform.scale)
+        assertClose(transform.scaleX, transform.scaleY)
+        assertClose(2400f, bounds.height)
+        assertTrue(bounds.width > 1080f)
+        assertClose(540f, bounds.centerX)
+        assertClose(1200f, bounds.centerY)
+        assertClose((1080f - 1920f * transform.scale) / 2f, transform.translationX)
+        assertClose((2400f - 1080f * transform.scale) / 2f, transform.translationY)
+    }
+
+    @Test
+    fun centerCropIsUniformCenteredAndCoversRequestedViewports() {
         val cases = listOf(
             ImageSize(1920, 1080) to PreviewViewport(1080, 2400),
             ImageSize(1920, 1080) to PreviewViewport(1080, 1920),
@@ -41,76 +60,96 @@ class PreviewGeometryTest {
 
         cases.forEach { (buffer, viewport) ->
             listOf(CameraFacing.BACK, CameraFacing.FRONT).forEach { facing ->
-                for (sensor in listOf(0, 90, 180, 270)) {
-                    for (display in listOf(0, 90, 180, 270)) {
-                        val transform = transform(buffer, viewport, sensor, display, facing)
-                        val bounds = transform.transformedBounds
-                        assertClose(transform.scaleX, transform.scaleY)
-                        assertTrue(bounds.width + EPSILON >= viewport.width)
-                        assertTrue(bounds.height + EPSILON >= viewport.height)
-                        assertClose(viewport.width / 2f, bounds.centerX)
-                        assertClose(viewport.height / 2f, bounds.centerY)
-                    }
-                }
+                val transform = transform(buffer, viewport, facing)
+                val bounds = transform.transformedBounds
+                assertClose(transform.scaleX, transform.scaleY)
+                assertTrue(bounds.width + EPSILON >= viewport.width)
+                assertTrue(bounds.height + EPSILON >= viewport.height)
+                assertClose(viewport.width / 2f, bounds.centerX)
+                assertClose(viewport.height / 2f, bounds.centerY)
             }
         }
     }
 
     @Test
-    fun transformOrientationMatchesSensorDisplayRelationship() {
-        for (facing in listOf(CameraFacing.BACK, CameraFacing.FRONT)) {
-            for (sensor in listOf(0, 90, 180, 270)) {
-                for (display in listOf(0, 90, 180, 270)) {
-                    val transform = transform(
-                        ImageSize(1920, 1080),
-                        PreviewViewport(1080, 2400),
-                        sensor,
-                        display,
-                        facing,
-                    )
-                    val center = transform.mapBufferToViewport(PreviewPoint(960f, 540f))
-                    val sourceRight = transform.mapBufferToViewport(PreviewPoint(1060f, 540f))
-                    val dx = sourceRight.x - center.x
-                    val dy = sourceRight.y - center.y
-                    val rotation = transform.geometry.relativeRotationDegrees
-                    val expected = expectedSourceRightDirection(rotation, facing == CameraFacing.FRONT)
-                    assertEquals(expected.first, dx.signWithTolerance())
-                    assertEquals(expected.second, dy.signWithTolerance())
-                }
-            }
-        }
-    }
-
-    @Test
-    fun inverseTransformMapsVisibleCenterCropBackToBuffer() {
-        val back = transform(
+    fun circleRemainsCircularAfterPreviewTransform() {
+        val transform = transform(
             ImageSize(1920, 1080),
             PreviewViewport(1080, 2400),
-            sensor = 0,
-            display = 0,
-            facing = CameraFacing.BACK,
+            CameraFacing.BACK,
         )
-        val center = back.mapNormalizedViewportToBuffer(0.5f, 0.5f)
+        val center = transform.mapBufferToViewport(PreviewPoint(960f, 540f))
+        val right = transform.mapBufferToViewport(PreviewPoint(1060f, 540f))
+        val down = transform.mapBufferToViewport(PreviewPoint(960f, 640f))
+
+        assertClose(abs(right.x - center.x), abs(down.y - center.y))
+        assertClose(center.y, right.y)
+        assertClose(center.x, down.x)
+    }
+
+    @Test
+    fun transformIntroducesNoRotation() {
+        val transform = transform(
+            ImageSize(1920, 1080),
+            PreviewViewport(1080, 2400),
+            CameraFacing.BACK,
+        )
+        val center = transform.mapBufferToViewport(PreviewPoint(960f, 540f))
+        val sourceRight = transform.mapBufferToViewport(PreviewPoint(1060f, 540f))
+        val sourceDown = transform.mapBufferToViewport(PreviewPoint(960f, 640f))
+
+        assertTrue(sourceRight.x > center.x)
+        assertClose(center.y, sourceRight.y)
+        assertTrue(sourceDown.y > center.y)
+        assertClose(center.x, sourceDown.x)
+    }
+
+    @Test
+    fun frontCameraMirrorDoesNotRotateOrChangeScale() {
+        val viewport = PreviewViewport(1080, 2400)
+        val back = transform(ImageSize(1920, 1080), viewport, CameraFacing.BACK)
+        val front = transform(ImageSize(1920, 1080), viewport, CameraFacing.FRONT)
+        val center = front.mapBufferToViewport(PreviewPoint(960f, 540f))
+        val sourceRight = front.mapBufferToViewport(PreviewPoint(1060f, 540f))
+        val sourceDown = front.mapBufferToViewport(PreviewPoint(960f, 640f))
+
+        assertClose(back.scale, front.scale)
+        assertTrue(sourceRight.x < center.x)
+        assertClose(center.y, sourceRight.y)
+        assertTrue(sourceDown.y > center.y)
+        assertClose(center.x, sourceDown.x)
+    }
+
+    @Test
+    fun inverseTransformMapsVisibleCenterCropBackToPreviewBuffer() {
+        val transform = transform(
+            ImageSize(1920, 1080),
+            PreviewViewport(1080, 2400),
+            CameraFacing.BACK,
+        )
+        val center = transform.mapNormalizedViewportToBuffer(0.5f, 0.5f)
         assertClose(0.5f, center.x)
         assertClose(0.5f, center.y)
 
-        val left = back.mapNormalizedViewportToBuffer(0f, 0.5f)
-        val right = back.mapNormalizedViewportToBuffer(1f, 0.5f)
+        val left = transform.mapNormalizedViewportToBuffer(0f, 0.5f)
+        val right = transform.mapNormalizedViewportToBuffer(1f, 0.5f)
         assertTrue(left.x > 0f)
         assertTrue(right.x < 1f)
         assertClose(1f, left.x + right.x)
 
-        val leftViewport = PreviewPoint(0f, 1200f)
-        val roundTrip = back.mapBufferToViewport(back.mapViewportToBuffer(leftViewport))
-        assertClose(leftViewport.x, roundTrip.x)
-        assertClose(leftViewport.y, roundTrip.y)
+        val viewportPoint = PreviewPoint(0f, 1200f)
+        val roundTrip = transform.mapBufferToViewport(
+            transform.mapViewportToBuffer(viewportPoint),
+        )
+        assertClose(viewportPoint.x, roundTrip.x)
+        assertClose(viewportPoint.y, roundTrip.y)
     }
 
     @Test
-    fun frontCameraInverseMappingAccountsForMirror() {
+    fun frontCameraInverseMappingAccountsOnlyForMirror() {
         val viewport = PreviewViewport(1080, 2400)
-        val back = transform(ImageSize(1920, 1080), viewport, 0, 0, CameraFacing.BACK)
-        val front = transform(ImageSize(1920, 1080), viewport, 0, 0, CameraFacing.FRONT)
+        val back = transform(ImageSize(1920, 1080), viewport, CameraFacing.BACK)
+        val front = transform(ImageSize(1920, 1080), viewport, CameraFacing.FRONT)
 
         val backLeft = back.mapNormalizedViewportToBuffer(0f, 0.5f)
         val frontLeft = front.mapNormalizedViewportToBuffer(0f, 0.5f)
@@ -144,32 +183,11 @@ class PreviewGeometryTest {
     private fun transform(
         buffer: ImageSize,
         viewport: PreviewViewport,
-        sensor: Int,
-        display: Int,
         facing: CameraFacing,
     ) = PreviewTransformCalculator.calculate(
-        PreviewGeometry(buffer, sensor, display, facing),
+        PreviewGeometry(buffer, facing),
         viewport,
     )
-
-    private fun expectedSourceRightDirection(
-        rotation: Int,
-        mirrored: Boolean,
-    ): Pair<Int, Int> {
-        val unmirrored = when (rotation) {
-            90 -> 0 to 1
-            180 -> -1 to 0
-            270 -> 0 to -1
-            else -> 1 to 0
-        }
-        return if (mirrored) -unmirrored.first to unmirrored.second else unmirrored
-    }
-
-    private fun Float.signWithTolerance(): Int = when {
-        this > EPSILON -> 1
-        this < -EPSILON -> -1
-        else -> 0
-    }
 
     private fun assertClose(expected: Float, actual: Float) {
         assertTrue("Expected $expected, actual $actual", abs(expected - actual) < EPSILON)

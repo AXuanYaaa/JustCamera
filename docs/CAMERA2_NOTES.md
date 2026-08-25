@@ -18,14 +18,16 @@ camera does not discard successfully mapped cameras.
 - Preview sizes come from `SurfaceTexture` output sizes. Selection prefers the closest view aspect
   ratio and bounds normal preview work to 1080p when the HAL exposes such a choice.
 - The HAL buffer size is set before the `Surface` and capture session are created.
-- `PreviewGeometry` explicitly combines buffer size, sensor orientation, display rotation, and
-  facing. `PreviewTransformCalculator` rotates into display orientation, mirrors front preview,
-  applies one uniform `CENTER_CROP` scale, and centers the result. Its source-to-viewport scale is
-  equal on both axes; `CameraPreview` only adapts that verified mapping to compensate for
-  TextureView's implicit buffer-to-view stretch.
-- Tap focus uses the inverse of the same transform, then center-crops the active-array/zoom region
-  to the preview stream aspect before creating metering rectangles. Display crop, sensor-stream
-  crop, and front-camera mirroring therefore cannot silently offset the metering region.
+- Camera2/SurfaceTexture owns the sensor-to-display orientation supplied by the producer pipeline.
+  The UI must not apply that rotation a second time. `PreviewGeometry` therefore contains only
+  buffer size and facing. `PreviewTransformCalculator` applies one uniform `CENTER_CROP` scale,
+  centered translation, and an independent front-camera mirror. Its source-to-viewport scale is
+  equal on both axes; `CameraPreview` uses an axis-aligned adapter to compensate only for
+  TextureView's implicit buffer-to-view stretch, with no rotation matrix.
+- Tap focus uses the inverse scale/translation/mirror transform, then center-crops the
+  active-array/zoom region to the preview stream aspect before creating metering rectangles.
+  Display crop, sensor-stream crop, and front-camera mirroring therefore cannot silently offset
+  the metering region.
 - Capture orientation remains independent from preview display geometry.
 - A configuration change recreates the activity and closes/reopens Camera2. Background/foreground
   transitions close in `onStop` and reopen in `onStart` when permission and a surface are ready.

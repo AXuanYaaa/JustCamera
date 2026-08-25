@@ -73,21 +73,23 @@ fun SettingsScreen(
         Spacer(Modifier.height(24.dp))
         SectionTitle(stringResource(R.string.language))
         SettingsCard {
-            AppLanguage.entries.forEachIndexed { index, language ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onLanguageSelected(language) }
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    RadioButton(
-                        selected = language == selectedLanguage,
-                        onClick = { onLanguageSelected(language) },
-                    )
-                    Text(stringResource(language.displayNameResource))
+            Column {
+                AppLanguage.entries.forEachIndexed { index, language ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onLanguageSelected(language) }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = language == selectedLanguage,
+                            onClick = { onLanguageSelected(language) },
+                        )
+                        Text(stringResource(language.displayNameResource))
+                    }
+                    if (index < AppLanguage.entries.lastIndex) HorizontalDivider()
                 }
-                if (index < AppLanguage.entries.lastIndex) HorizontalDivider()
             }
         }
         Spacer(Modifier.height(24.dp))

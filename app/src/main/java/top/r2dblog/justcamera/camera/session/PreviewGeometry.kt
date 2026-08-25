@@ -35,32 +35,14 @@ object OrientationCalculator {
         normalizeDegrees(sensorOrientation - displayRotationDegrees)
     }
 
-    fun relativePreviewRotation(
-        sensorOrientation: Int,
-        displayRotationDegrees: Int,
-        facing: CameraFacing,
-    ): Int = jpegOrientation(sensorOrientation, displayRotationDegrees, facing)
-
     private fun normalizeDegrees(degrees: Int): Int = (degrees % 360 + 360) % 360
 }
 
-/** Camera buffer facts needed by the UI without exposing CameraCharacteristics. */
+/** Preview display facts needed by the UI without exposing CameraCharacteristics. */
 data class PreviewGeometry(
     val bufferSize: ImageSize,
-    val sensorOrientation: Int,
-    val displayRotationDegrees: Int,
     val cameraFacing: CameraFacing,
 ) {
-    init {
-        require(sensorOrientation in setOf(0, 90, 180, 270))
-        require(displayRotationDegrees in setOf(0, 90, 180, 270))
-    }
-
-    val relativeRotationDegrees: Int = OrientationCalculator.relativePreviewRotation(
-        sensorOrientation = sensorOrientation,
-        displayRotationDegrees = displayRotationDegrees,
-        facing = cameraFacing,
-    )
     val mirrorHorizontally: Boolean = cameraFacing == CameraFacing.FRONT
 }
 
@@ -90,9 +72,9 @@ enum class PreviewScalePolicy { CENTER_CROP, FIT_CENTER }
  * An affine mapping from camera-buffer pixels to viewport pixels.
  *
  * [scaleX] and [scaleY] deliberately expose the complete source-to-viewport scale. They are
- * always identical: the buffer is rotated, optionally mirrored for the front camera, uniformly
- * scaled, and centered. TextureView's implicit buffer-to-view stretch is compensated separately
- * by the Android adapter in CameraPreview.
+ * always identical: the already oriented SurfaceTexture content is optionally mirrored for the
+ * front camera, uniformly scaled, and centered. TextureView's implicit buffer-to-view stretch is
+ * compensated separately by the Android adapter in CameraPreview. No rotation belongs here.
  */
 class PreviewTransform internal constructor(
     val geometry: PreviewGeometry,
@@ -103,22 +85,12 @@ class PreviewTransform internal constructor(
     val scaleX: Float get() = scale
     val scaleY: Float get() = scale
 
-    val rotatedBufferWidth: Float
-        get() = if (geometry.relativeRotationDegrees % 180 == 0) {
-            geometry.bufferSize.width.toFloat()
-        } else {
-            geometry.bufferSize.height.toFloat()
-        }
-    val rotatedBufferHeight: Float
-        get() = if (geometry.relativeRotationDegrees % 180 == 0) {
-            geometry.bufferSize.height.toFloat()
-        } else {
-            geometry.bufferSize.width.toFloat()
-        }
+    val displayedBufferWidth: Float get() = geometry.bufferSize.width.toFloat()
+    val displayedBufferHeight: Float get() = geometry.bufferSize.height.toFloat()
     val transformedBounds: PreviewBounds
         get() {
-            val width = rotatedBufferWidth * scale
-            val height = rotatedBufferHeight * scale
+            val width = displayedBufferWidth * scale
+            val height = displayedBufferHeight * scale
             return PreviewBounds(
                 left = (viewport.width - width) / 2f,
                 top = (viewport.height - height) / 2f,
@@ -126,15 +98,16 @@ class PreviewTransform internal constructor(
                 bottom = (viewport.height + height) / 2f,
             )
         }
+    val translationX: Float get() = transformedBounds.left
+    val translationY: Float get() = transformedBounds.top
 
     fun mapBufferToViewport(point: PreviewPoint): PreviewPoint {
         val centeredX = point.x - geometry.bufferSize.width / 2f
         val centeredY = point.y - geometry.bufferSize.height / 2f
-        var rotated = rotateClockwise(centeredX, centeredY, geometry.relativeRotationDegrees)
-        if (geometry.mirrorHorizontally) rotated = PreviewPoint(-rotated.x, rotated.y)
+        val displayX = if (geometry.mirrorHorizontally) -centeredX else centeredX
         return PreviewPoint(
-            x = viewport.width / 2f + rotated.x * scale,
-            y = viewport.height / 2f + rotated.y * scale,
+            x = viewport.width / 2f + displayX * scale,
+            y = viewport.height / 2f + centeredY * scale,
         )
     }
 
@@ -142,11 +115,10 @@ class PreviewTransform internal constructor(
         var displayX = (point.x - viewport.width / 2f) / scale
         val displayY = (point.y - viewport.height / 2f) / scale
         if (geometry.mirrorHorizontally) displayX = -displayX
-        val source = rotateClockwise(displayX, displayY, -geometry.relativeRotationDegrees)
         return PreviewPoint(
-            x = (source.x + geometry.bufferSize.width / 2f)
+            x = (displayX + geometry.bufferSize.width / 2f)
                 .coerceIn(0f, geometry.bufferSize.width.toFloat()),
-            y = (source.y + geometry.bufferSize.height / 2f)
+            y = (displayY + geometry.bufferSize.height / 2f)
                 .coerceIn(0f, geometry.bufferSize.height.toFloat()),
         )
     }
@@ -163,14 +135,6 @@ class PreviewTransform internal constructor(
             y = point.y / geometry.bufferSize.height,
         )
     }
-
-    private fun rotateClockwise(x: Float, y: Float, degrees: Int): PreviewPoint =
-        when ((degrees % 360 + 360) % 360) {
-            90 -> PreviewPoint(-y, x)
-            180 -> PreviewPoint(-x, -y)
-            270 -> PreviewPoint(y, -x)
-            else -> PreviewPoint(x, y)
-        }
 }
 
 object PreviewTransformCalculator {
@@ -179,11 +143,8 @@ object PreviewTransformCalculator {
         viewport: PreviewViewport,
         policy: PreviewScalePolicy = PreviewScalePolicy.CENTER_CROP,
     ): PreviewTransform {
-        val rotated = geometry.relativeRotationDegrees % 180 != 0
-        val rotatedWidth = if (rotated) geometry.bufferSize.height else geometry.bufferSize.width
-        val rotatedHeight = if (rotated) geometry.bufferSize.width else geometry.bufferSize.height
-        val widthScale = viewport.width.toFloat() / rotatedWidth
-        val heightScale = viewport.height.toFloat() / rotatedHeight
+        val widthScale = viewport.width.toFloat() / geometry.bufferSize.width
+        val heightScale = viewport.height.toFloat() / geometry.bufferSize.height
         val scale = when (policy) {
             PreviewScalePolicy.CENTER_CROP -> max(widthScale, heightScale)
             PreviewScalePolicy.FIT_CENTER -> min(widthScale, heightScale)

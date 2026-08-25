@@ -275,8 +275,6 @@ internal class CameraEngine(context: Context) {
             val bufferPoint = PreviewTransformCalculator.calculate(
                 geometry = PreviewGeometry(
                     bufferSize = bufferSize,
-                    sensorOrientation = camera.sensorOrientation,
-                    displayRotationDegrees = displayRotationDegrees,
                     cameraFacing = camera.facing,
                 ),
                 viewport = PreviewViewport(surfaceWidth, surfaceHeight),

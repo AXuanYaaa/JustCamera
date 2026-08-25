@@ -82,10 +82,11 @@ private-storage `.so`
 11. `SceneLinearFrame` is a distinct scene-referred approximation with finite non-negative Float32
     RGB and no upper clamp. It cannot enter PH3/PH4. Only `ReinhardToneMapper` produces the
     normalized display-referred `RgbFloatFrame` accepted by the existing FilterEngine.
-12. Preview geometry is a pure camera-domain contract. `PreviewTransformCalculator` owns sensor /
-    display rotation, front mirroring, uniform center-crop scale, centering, and inverse focus
-    mapping. Compose receives only project models; the Android `Matrix` is a final TextureView
-    adapter and is not the source of geometry truth.
+12. Preview geometry is a pure camera-domain contract. Camera2/SurfaceTexture owns producer
+    orientation exactly once. `PreviewTransformCalculator` owns only front mirroring, uniform
+    center-crop scale, centering, and inverse focus mapping; it never rotates. Compose receives
+    only project models, and the Android `Matrix` is an axis-aligned TextureView stretch adapter,
+    not the source of geometry truth.
 13. `AppSettingsRepository` owns non-camera preferences. `AppLanguage` defaults to `ZH_CN`, and
     `AppCompatDelegate` applies the persisted application locale. Settings persistence stays on
     the UI/application side and never enters the camera thread. Camera, Filters, Settings, and the

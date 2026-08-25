@@ -23,6 +23,7 @@ class AppLanguageTest {
 
     @Test
     fun languagesMapToStableTagsAndResources() {
+        assertEquals(listOf(AppLanguage.ZH_CN, AppLanguage.EN), AppLanguage.entries)
         assertEquals("zh-CN", AppLanguage.ZH_CN.languageTag)
         assertEquals(R.string.language_simplified_chinese, AppLanguage.ZH_CN.displayNameResource)
         assertEquals("en", AppLanguage.EN.languageTag)
