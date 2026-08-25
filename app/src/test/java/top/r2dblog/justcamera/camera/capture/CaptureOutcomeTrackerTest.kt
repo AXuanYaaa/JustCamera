@@ -29,4 +29,23 @@ class CaptureOutcomeTrackerTest {
         assertEquals("capture.jpg", status.outputs.single().displayName)
         assertEquals(CaptureOutputType.DNG, status.failures.single().type)
     }
+
+    @Test
+    fun timeoutKeepsAlreadySavedJpegAsPartialSuccess() {
+        val tracker = CaptureOutcomeTracker(
+            CaptureMode.JPEG_AND_RAW,
+            setOf(CaptureOutputType.JPEG, CaptureOutputType.DNG),
+        )
+        tracker.begin(CaptureOutputType.JPEG)
+        tracker.succeed(CaptureOutputType.JPEG, "capture.jpg")
+
+        val status = tracker.failPending { type ->
+            CameraError(CameraErrorCode.RAW_PAIRING_FAILED, "Timed out waiting for ${type.name}")
+        }
+
+        assertTrue(status is CaptureStatus.PartialSuccess)
+        status as CaptureStatus.PartialSuccess
+        assertEquals(listOf(CaptureOutputType.JPEG), status.outputs.map { it.type })
+        assertEquals(listOf(CaptureOutputType.DNG), status.failures.map { it.type })
+    }
 }

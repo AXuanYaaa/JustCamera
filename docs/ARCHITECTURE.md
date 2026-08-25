@@ -13,8 +13,8 @@ Camera Application (`CameraController`)
     ↓
 Camera orchestration (`CameraEngine`)
     ↓                    ↘
-request/control policy   capability mapping + RAW/capture coordinators
-(`CameraRequestController`)  (`DngPairingQueue`, MediaStore adapters)
+request/control policy   capability mapping + still capture coordination
+(`CameraRequestController`)  (`StillCaptureCoordinator` + RAW leases)
     ↓ platform adapters
 Camera2 / ImageReader / DngCreator / MediaStore
 
@@ -40,15 +40,16 @@ private-storage `.so`
 1. `ui` depends on application controllers and project-owned models only. It does not construct
    Camera2 requests or consume `CameraCharacteristics`.
 2. `camera/application` exposes a small lifecycle/intent facade. `CameraEngine` remains the
-   orchestration/state owner, while the camera-thread-confined `CameraSessionController` is the
-   sole owner of `CameraDevice`, `CameraCaptureSession`, `ImageReader`, and preview `Surface`.
+   orchestration/state owner, while the camera-thread-confined `CameraSessionController` owns the
+   live `CameraDevice`, `CameraCaptureSession`, readers, and preview `Surface`.
 3. `camera/control` owns the requested project control state, pure validation/conversion logic,
    and the only adapter that applies settings to `CaptureRequest.Builder`. Preview and still
    capture both call this adapter; UI never sees Camera2 request keys.
 4. `camera/capability` is the only mapping boundary from `CameraCharacteristics` to
    `CameraCapabilities`. Its mapper consumes a pure raw-value model so it can be tested on the JVM.
-5. `camera/raw` owns the pure bounded timestamp-pairing policy. `camera/capture` owns multi-output
-   completion tracking and MediaStore/DNG persistence; callbacks never perform disk I/O.
+5. `camera/raw` owns pure timestamp-pairing, RAW topology, and in-flight ownership policy.
+   `StillCaptureCoordinator` owns capture token/generation, expected outputs, pairing, timeout,
+   partial completion, RAW leases, and save-job lifecycle; callbacks never perform disk I/O.
 6. `imaging` and `filter` do not depend on Compose. Android `Image` is acquired and closed at the
    camera boundary; the future processing adapter must copy or transfer planes into `ImageFrame`
    with explicit ownership.
@@ -82,12 +83,15 @@ This separation keeps Camera2 callback latency independent from storage and futu
 
 ## Resource ownership
 
-`CameraSessionController.closeAll()` is the one ownership boundary for capture session, device,
-JPEG/RAW `ImageReader`, and preview `Surface`. Every mutation checks that it runs on the camera
-looper. Acquired RAW images have explicit transient ownership: the bounded pairing queue owns an
-unpaired image, then transfers it either to the DNG I/O job or to immediate close/eviction.
-The TextureView-owned `SurfaceTexture` is never passed into that ownership boundary and is never
-released by camera recovery.
+`CameraSessionController.closeAll()` is the live-resource boundary for capture session, device,
+JPEG/RAW `ImageReader`, and preview `Surface`. Every device/session mutation checks the camera
+looper. During shutdown, the RAW reader is logically detached and transferred to
+`StillCaptureCoordinator` for retirement. A generation-aware lease count prevents physical reader
+close while an acquired image is paired or being consumed by `DngCreator`; unpaired images drain
+immediately, and the final DNG `finally` closes `Image` before closing its retired reader. Thus a
+long save never blocks the camera thread and cannot use an image invalidated by reader close. The
+TextureView-owned `SurfaceTexture` never enters either ownership boundary and recovery never
+releases it.
 
 Lifecycle close invalidates outstanding callback generations, cancels scheduled retries, closes
 owned resources, and emits `Closed` at most once. A device disconnect, fatal device callback,
@@ -99,6 +103,10 @@ restart. Successful preview resets the retry budget. Explicit `onStop` and surfa
 not retry.
 
 Ordinary ISO, shutter, focus, WB, lock, metering, and zoom changes rebuild only the repeating
-preview request. The session topology is unchanged. A RAW-capable camera attempts preview + JPEG +
-RAW once; if the HAL rejects that topology, the generation is closed through the PH1.1 failure
-path and the camera retries JPEG-only without presenting RAW as available for that engine lifetime.
+preview request. The session topology is unchanged. A confirmed HAL rejection of preview + JPEG +
+RAW downgrades only the current selected-camera tenure; transient access/service/lifecycle failures
+preserve RAW through normal retry. Switching away and back creates a new tenure and retries RAW.
+
+Already-started MediaStore saves finish safely across switch, stop, error recovery, and engine
+release. The coordinator accepts no new jobs after release and cancels its scope only after all
+started jobs complete, ensuring every pending MediaStore row is published or cleaned up.

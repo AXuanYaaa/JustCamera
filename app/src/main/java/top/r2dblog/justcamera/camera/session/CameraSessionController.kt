@@ -11,7 +11,7 @@ import top.r2dblog.justcamera.logging.JcLog
 import top.r2dblog.justcamera.logging.LogCategory
 
 /**
- * Camera-thread-confined owner for every closeable Camera2 session resource.
+ * Camera-thread-confined owner for every live Camera2 session resource.
  *
  * The TextureView owns its [SurfaceTexture]; this controller owns only the [Surface] wrapper
  * created from it. Closing this controller never releases the SurfaceTexture.
@@ -48,9 +48,9 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
         imageReader = reader
     }
 
-    fun replaceRawImageReader(reader: ImageReader?) {
+    fun replaceRawImageReader(reader: ImageReader?, retirePrevious: (ImageReader) -> Unit) {
         checkCameraThread()
-        rawImageReader?.close()
+        rawImageReader?.let(retirePrevious)
         rawImageReader = reader
     }
 
@@ -72,8 +72,11 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
         if (captureSession !== session) session.close()
     }
 
-    /** Returns true when at least one owned resource was closed. */
-    fun closeAll(): Boolean {
+    /**
+     * Returns true when at least one owned resource was closed or retired. RAW reader ownership is
+     * transferred to [retireRawReader], which may defer physical close for an in-flight DNG lease.
+     */
+    fun closeAll(retireRawReader: (ImageReader) -> Unit): Boolean {
         checkCameraThread()
         val hadResources = captureSession != null || cameraDevice != null ||
             imageReader != null || rawImageReader != null || previewSurface != null
@@ -91,7 +94,7 @@ internal class CameraSessionController(private val cameraLooper: Looper) {
         cameraDevice = null
         imageReader?.close()
         imageReader = null
-        rawImageReader?.close()
+        rawImageReader?.let(retireRawReader)
         rawImageReader = null
         previewSurface?.release()
         previewSurface = null

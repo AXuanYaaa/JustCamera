@@ -6,7 +6,8 @@ import android.hardware.camera2.DngCreator
 import android.hardware.camera2.TotalCaptureResult
 import android.media.Image
 
-class MediaStoreDngSaver(context: Context) {
+/** Encodes the supplied image but leaves Image.close() to the caller's ownership boundary. */
+internal class MediaStoreDngSaver(context: Context) {
     private val outputStore = MediaStoreOutputStore(context)
 
     suspend fun save(
@@ -14,14 +15,10 @@ class MediaStoreDngSaver(context: Context) {
         result: TotalCaptureResult,
         image: Image,
         displayName: String,
-    ): Result<SavedMedia> = try {
-        outputStore.save(displayName, DNG_MIME_TYPE) { stream ->
-            DngCreator(characteristics, result).use { creator ->
-                creator.writeImage(stream, image)
-            }
+    ): Result<SavedMedia> = outputStore.save(displayName, DNG_MIME_TYPE) { stream ->
+        DngCreator(characteristics, result).use { creator ->
+            creator.writeImage(stream, image)
         }
-    } finally {
-        image.close()
     }
 
     private companion object {

@@ -47,8 +47,8 @@ recovery behavior varies by vendor.
 
 ## Error recovery and ownership
 
-- `CameraSessionController` exclusively owns the current `CameraDevice`, capture session,
-  `ImageReader`, and preview `Surface`; only the camera looper may mutate them.
+- `CameraSessionController` exclusively owns the live `CameraDevice`, capture session, readers,
+  and preview `Surface`; only the camera looper may mutate device/session ownership.
 - TextureView owns `SurfaceTexture`. Normal close and failure recovery release the `Surface`
   wrapper but preserve `SurfaceTexture` while the view remains available.
 - Session configure failure, synchronous session-creation failure, preview request/repeating
@@ -61,23 +61,30 @@ recovery behavior varies by vendor.
   for the next permission/surface/start event rather than spinning.
 - Policy-disabled and unsupported-capability errors are non-recoverable. Camera switch or another
   explicit lifecycle action can establish a new clean state.
-- A capture-request failure does not close an otherwise healthy repeating preview session.
-- RAW reader ownership is included in `CameraSessionController`; unpaired acquired RAW images are
-  bounded and closed by the pairing boundary before reader/session teardown.
+- A capture-request/output timeout does not close an otherwise healthy repeating preview session.
+  Its current-generation terminal callback returns both capture status and overall camera state to
+  a preview-ready result; stale-generation callbacks are ignored.
+- A live RAW reader belongs to `CameraSessionController`. Shutdown transfers it to the capture
+  coordinator as retired: no new leases are accepted, unpaired images close, and physical reader
+  close waits only for existing DNG leases. Each writer closes `Image` in `finally`, then the last
+  lease closes the retired reader. Camera shutdown never waits for DNG disk I/O.
 
 ## RAW and DNG
 
 - RAW is enabled only when both `REQUEST_AVAILABLE_CAPABILITIES_RAW` and RAW_SENSOR sizes exist.
 - A single still request targets JPEG, RAW, or both according to the effective capture mode.
 - Sensor timestamps pair RAW `Image` and `TotalCaptureResult` in either arrival order. The queue is
-  bounded by count and age; stale images are closed, and lifecycle close drains the queue.
+  bounded by count and age; stale images are closed, and lifecycle close drains unpaired leases.
 - `DngCreator` runs on the I/O dispatcher with matching characteristics/result/image. The acquired
-  image closes in `finally`, including encoding and MediaStore failures.
+  image lease closes in the coordinator's `finally`, including encoding and MediaStore failures.
 - JPEG and DNG use `DCIM/JustCamera`; Android 10+ items remain pending until the publish update
   succeeds. A failed publish is deleted and reported as storage failure.
-- If preview + JPEG + RAW session configuration fails, the callback generation is invalidated,
-  every owned resource closes, and the retry uses JPEG-only topology. This avoids a RAW retry loop
-  while preserving baseline capture.
+- Only `onConfigureFailed` or a synchronous invalid-output-combination rejection proves RAW
+  topology incompatibility. It invalidates that generation and retries JPEG-only for the current
+  camera-selection tenure. `CameraAccessException`, camera-in-use/service errors, and lifecycle
+  interruption do not disable RAW. Switching away and back begins a new RAW attempt.
+- Started saves finish safely through switch/stop/error/destroy; after engine release no new save
+  jobs are accepted, and the I/O scope ends after existing jobs publish or clean their rows.
 
 ## Device validation checklist
 
