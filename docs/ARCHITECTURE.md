@@ -1,6 +1,6 @@
 # Architecture
 
-## PH2 shape
+## PH3 shape
 
 JustCamera starts as one Android application module. Boundaries are packages with concrete
 behavior rather than empty Gradle modules; each top-level boundary can later move to a separate
@@ -18,15 +18,15 @@ request/control policy   capability mapping + still capture coordination
     ↓ platform adapters
 Camera2 / ImageReader / DngCreator / MediaStore
 
-Camera2 image boundary (JPEG + RAW/DNG today, future YUV processing)
+RGB working frame
     ↓
-ImageFrame
-    ↓
-ProcessingPipeline
-    ↓
-ImageFilter
-    ↓
-Native processing / encoder
+ProcessingPipeline → FilterEngine → ordered FilterChain
+                         ↓
+        registry + built-ins + LUT + presets
+
+Future decoded JPEG/YUV/developed RAW adapter
+    ↓ explicit owned RGB conversion
+ImageFrame → ProcessingPipeline → native processing / encoder
 
 PluginHost
     ↓ validated descriptors
@@ -50,9 +50,10 @@ private-storage `.so`
 5. `camera/raw` owns pure timestamp-pairing, RAW topology, and in-flight ownership policy.
    `StillCaptureCoordinator` owns capture token/generation, expected outputs, pairing, timeout,
    partial completion, RAW leases, and save-job lifecycle; callbacks never perform disk I/O.
-6. `imaging` and `filter` do not depend on Compose. Android `Image` is acquired and closed at the
-   camera boundary; the future processing adapter must copy or transfer planes into `ImageFrame`
-   with explicit ownership.
+6. `imaging` and `filter` do not depend on Compose or Camera2. Android `Image` closes at the camera
+   boundary. PH3 filters accept only immutable normalized linear-sRGB `RgbFloatFrame`; RAW, YUV,
+   JPEG, and DNG require an explicit future conversion adapter. `FilterEngine.processingNode()` is
+   the single bridge into the original pipeline.
 7. `plugin/host` depends on descriptors and the stable API version, never on a concrete plugin.
    External loading stays disabled until its trust/install model is implemented.
 8. Kotlin calls native code through `nativecore`. C plugins expose only the documented C ABI.
@@ -75,6 +76,7 @@ resources have been closed; a recoverable Error is therefore also a valid source
 - **Image acquisition thread (`JustCamera-ImageAcquire`):** acquires JPEG/RAW outputs. JPEG bytes
   are copied promptly; a paired RAW `Image` transfers to the DNG writer. No storage I/O runs here.
 - **I/O dispatcher:** MediaStore insert/write/finalization and `DngCreator.writeImage`.
+- **Processing dispatcher:** PH3 filter-chain validation and CPU reference pixel loops.
 - **Future processing worker:** RAW/YUV conversion, HDR and multi-frame pipeline work.
 - **Future native worker:** CPU-intensive C++ processing. JNI calls must not occupy the camera
   callback thread.

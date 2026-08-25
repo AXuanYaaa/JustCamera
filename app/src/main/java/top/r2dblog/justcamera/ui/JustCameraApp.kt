@@ -8,8 +8,9 @@ import androidx.compose.runtime.setValue
 import top.r2dblog.justcamera.camera.application.CameraController
 import top.r2dblog.justcamera.ui.camera.CameraScreen
 import top.r2dblog.justcamera.ui.capability.CapabilityScreen
+import top.r2dblog.justcamera.ui.filter.FilterScreen
 
-private enum class AppDestination { CAMERA, CAPABILITIES }
+private enum class AppDestination { CAMERA, CAPABILITIES, FILTERS }
 
 @Composable
 fun JustCameraApp(
@@ -26,10 +27,12 @@ fun JustCameraApp(
             storagePermissionGranted = storagePermissionGranted,
             requestPermissions = requestPermissions,
             openCapabilities = { destination = AppDestination.CAPABILITIES },
+            openFilters = { destination = AppDestination.FILTERS },
         )
         AppDestination.CAPABILITIES -> CapabilityScreen(
             cameraController = cameraController,
             onBack = { destination = AppDestination.CAMERA },
         )
+        AppDestination.FILTERS -> FilterScreen(onBack = { destination = AppDestination.CAMERA })
     }
 }

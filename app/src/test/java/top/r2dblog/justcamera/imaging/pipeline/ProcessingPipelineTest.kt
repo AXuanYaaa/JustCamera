@@ -8,6 +8,14 @@ import top.r2dblog.justcamera.imaging.frame.FrameFormat
 import top.r2dblog.justcamera.imaging.frame.FrameMetadataValue
 import top.r2dblog.justcamera.imaging.frame.ImageFrame
 import top.r2dblog.justcamera.imaging.frame.ImagePlane
+import top.r2dblog.justcamera.imaging.frame.RgbChannelLayout
+import top.r2dblog.justcamera.imaging.frame.RgbFloatFrame
+import top.r2dblog.justcamera.filter.builtin.BuiltInFilterCatalog
+import top.r2dblog.justcamera.filter.model.FilterChain
+import top.r2dblog.justcamera.filter.model.FilterOperation
+import top.r2dblog.justcamera.filter.model.FilterParameterValue
+import top.r2dblog.justcamera.filter.model.FilterParameters
+import top.r2dblog.justcamera.filter.processing.FilterEngine
 
 class ProcessingPipelineTest {
     @Test
@@ -37,5 +45,34 @@ class ProcessingPipelineTest {
 
         assertEquals(listOf("convert", "tone", "encode"), visited)
         assertEquals(setOf("convert", "tone", "encode"), output.metadata.keys)
+    }
+
+    @Test
+    fun filterEngineUsesTheExistingProcessingPipeline() = runTest {
+        val input = RgbFloatFrame.create(
+            1,
+            1,
+            RgbChannelLayout.RGB,
+            floatArrayOf(0.2f, 0.25f, 0.3f),
+        ).toImageFrame()
+        val chain = FilterChain(
+            listOf(
+                FilterOperation(
+                    "builtin.exposure",
+                    FilterParameters(
+                        mapOf("exposure" to FilterParameterValue.FloatValue(1f)),
+                    ),
+                ),
+            ),
+        )
+        val pipeline = ProcessingPipeline(
+            listOf(FilterEngine(BuiltInFilterCatalog.registry()).processingNode(chain)),
+        )
+
+        val output = pipeline.process(input, ProcessingContext(ProcessingIntent.FINAL_CAPTURE))
+        val rgb = RgbFloatFrame.fromImageFrame(output)
+
+        assertEquals(0.4f, rgb.sample(0, 0), 0.0001f)
+        assertEquals("builtin.exposure", (output.metadata["filter.applied"] as FrameMetadataValue.Text).value)
     }
 }

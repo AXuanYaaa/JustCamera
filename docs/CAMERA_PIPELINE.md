@@ -1,6 +1,6 @@
-# Camera Pipeline
+# Camera and Processing Pipeline
 
-## Current PH2
+## Camera capture path (unchanged by PH3)
 
 ```text
 Camera2 device
@@ -31,17 +31,22 @@ writer, then is closed deterministically. `DngCreator` receives the matching cha
 tracks each output independently, so one successful file plus one failure becomes
 `PartialSuccess`. Missing outputs expire after a bounded timeout.
 
-## Processing contract established in PH1
+## PH3 processing path
 
 ```text
-ImageFrame → ProcessingNode[0] → … → ProcessingNode[n] → ImageFrame
+decoded/converted RGB_F32 ImageFrame
+    ↓ existing ProcessingPipeline
+FilterEngine ProcessingNode
+    ↓ validated ordered FilterChain on processing dispatcher
+linear-sRGB ImageFrame
 ```
 
-`ImageFrame` records dimensions, format, timestamp, rotation, metadata, plane buffers, row/pixel
-stride, and buffer ownership. A pipeline is sequential and suspendable. Preview and final-capture
-intent are explicit so later filters can provide latency-first and quality-first implementations.
+`ImageFrame` now also records bit depth, channel layout, primaries, transfer, and alpha semantics.
+The filter adapter rejects RAW, YUV, encoded JPEG/DNG, and ambiguous RGB. Only packed normalized
+RGB_F32/RGBA_F32 declared as linear sRGB is accepted. PREVIEW and FINAL_CAPTURE use one filter API.
+The CPU implementation is deterministic, sequential, suspendable, and runs off UI/camera threads.
 
-## Future processing pipeline (not implemented)
+## Future capture/preview integration (not implemented)
 
 ```text
 Camera2 RAW/YUV
@@ -54,13 +59,13 @@ denoise / HDR / multi-frame fusion
     ↓
 color science / tone mapping
     ↓
-filter / sharpen / grain / vignette
+PH3 FilterEngine node
     ↓
 encoder
     ↓
 MediaStore
 ```
 
-Each future stage must execute on a processing worker or native worker and carry capture metadata
-explicitly. PH2 only stores sensor RAW as DNG; it does not demosaic, denoise, merge, filter, or
-render RAW pixels.
+Each future stage must execute on a processing/native worker and carry metadata explicitly. PH3
+does not intercept current JPEG saves, filter the live `TextureView`, or alter DNG. A future JPEG/YUV
+decoder or RAW developer must produce the declared RGB working frame before calling FilterEngine.

@@ -2,7 +2,28 @@ package top.r2dblog.justcamera.imaging.frame
 
 import java.nio.ByteBuffer
 
-enum class FrameFormat { JPEG, YUV_420_888, RAW_SENSOR, RGBA_8888, UNKNOWN }
+enum class FrameFormat {
+    JPEG,
+    YUV_420_888,
+    RAW_SENSOR,
+    RGBA_8888,
+    RGB_F32,
+    RGBA_F32,
+    UNKNOWN,
+}
+
+enum class ChannelLayout { UNKNOWN, YUV, RAW_MOSAIC, RGB, RGBA, ENCODED }
+
+enum class ColorPrimaries { UNKNOWN, SRGB_BT709 }
+
+enum class TransferFunction { UNKNOWN, LINEAR, SRGB }
+
+enum class AlphaSemantics { NONE, OPAQUE, STRAIGHT, PREMULTIPLIED }
+
+data class FrameColorInfo(
+    val primaries: ColorPrimaries = ColorPrimaries.UNKNOWN,
+    val transfer: TransferFunction = TransferFunction.UNKNOWN,
+)
 
 enum class BufferOwnership {
     /** The frame may read the buffer only while its producer-defined lifetime is active. */
@@ -41,6 +62,10 @@ data class ImageFrame(
     val planes: List<ImagePlane>,
     val metadata: Map<String, FrameMetadataValue> = emptyMap(),
     val ownership: BufferOwnership = BufferOwnership.BORROWED,
+    val bitDepth: Int = 8,
+    val channelLayout: ChannelLayout = ChannelLayout.UNKNOWN,
+    val colorInfo: FrameColorInfo = FrameColorInfo(),
+    val alphaSemantics: AlphaSemantics = AlphaSemantics.NONE,
 ) {
     init {
         require(width > 0 && height > 0) { "Frame dimensions must be positive" }
@@ -48,5 +73,14 @@ data class ImageFrame(
             "rotationDegrees must be 0, 90, 180, or 270"
         }
         require(planes.isNotEmpty()) { "An ImageFrame must contain at least one plane" }
+        require(bitDepth > 0) { "bitDepth must be positive" }
+        if (format == FrameFormat.RGB_F32 || format == FrameFormat.RGBA_F32) {
+            require(bitDepth == 32) { "Float working frames use 32 bits per channel" }
+            require(colorInfo == LINEAR_SRGB) { "Float working frames must declare linear sRGB" }
+        }
+    }
+
+    companion object {
+        val LINEAR_SRGB = FrameColorInfo(ColorPrimaries.SRGB_BT709, TransferFunction.LINEAR)
     }
 }

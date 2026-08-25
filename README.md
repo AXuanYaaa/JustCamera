@@ -1,12 +1,12 @@
 # JustCamera
 
 JustCamera is an Android Camera2 foundation for a long-lived professional camera and
-computational-photography platform. The repository is currently at **PH2 — Pro Controls + RAW
-Capture Foundation**. It is not yet a replacement for a production system camera.
+computational-photography platform. The repository is currently at **PH3 — Filter Engine + LUT
+Foundation**. It is not yet a replacement for a production system camera.
 
 ## Current status
 
-PH2 provides:
+PH3 provides:
 
 - runtime camera permission integration and Android 8–9 legacy MediaStore permission;
 - Camera2 discovery with a project-owned capability model;
@@ -19,16 +19,23 @@ PH2 provides:
   and JPEG-only, RAW-only, or combined JPEG + RAW capture with partial-success reporting;
 - `StateFlow` camera/capture state and a unified error model;
 - a Compose camera screen and a live Camera2 capability inspector;
-- minimal `ImageFrame`, processing pipeline, and data-driven filter contracts;
+- an explicit linear-sRGB float working frame and the existing deterministic processing pipeline;
+- a project-owned Filter API, descriptors, typed/clamped parameters, registry, ordered chains,
+  execution modes, versioned presets, and five small built-in reference looks;
+- CPU reference exposure, contrast, saturation, temperature/tint, highlights/shadows, fade,
+  vignette, and cancellation-aware processing;
+- validated compact 1D/3D LUT models, strict `.cube` parsing, trilinear interpolation, and encoded
+  sRGB LUT strength blending;
+- a descriptor-driven filter configuration UI that explicitly does not claim live pixel rendering;
 - a real C++ JNI native-core version call;
 - a versioned C plugin ABI, registry, validation loader foundation, and a deliberately disabled
   external plugin install path;
 - host-side unit tests for control validation/math, zoom/metering, RAW policy, DNG pairing,
   capability mapping, state, geometry, pipeline, filter, and ABI logic.
 
-PH2 does **not** provide manual color temperature/gains, RAW development, YUV processing,
-filters/LUT rendering, HDR, night mode, denoise, super resolution, external plugin installation,
-or GPU processing. Those remain later roadmap work.
+PH3 does **not** provide sensor white-balance color science, RAW development/demosaic, Camera2 live
+filter rendering, automatic captured-JPEG recompression, HDR, night mode, denoise, super resolution,
+external plugin installation, native filter kernels, or GPU processing. Those remain later phases.
 
 ## Technology and Android versions
 
@@ -64,19 +71,21 @@ The project intentionally uses one Gradle `app` module with module-ready package
 ui → camera/application → camera/device → Camera2
                    ↘ camera/control + camera/capability
                    ↘ camera/raw + camera/capture → DngCreator + MediaStore
-filter/api → imaging/frame ← imaging/pipeline
+filter/api + registry + builtin + lut + preset → imaging/frame + imaging/pipeline
 plugin/host → plugin/api + plugin/model → native C ABI
 nativecore → JNI → C++
 ```
 
 Android framework types stop at platform adapters. UI reads `CameraCapabilities`, never
 `CameraCharacteristics`; processing reads `ImageFrame`, never retains `android.media.Image`.
-See [Architecture](docs/ARCHITECTURE.md) and [Camera pipeline](docs/CAMERA_PIPELINE.md).
+See [Architecture](docs/ARCHITECTURE.md), [Filter engine](docs/FILTER_ENGINE.md),
+[Color pipeline](docs/COLOR_PIPELINE.md), and [LUT format](docs/LUT_FORMAT.md).
 
 ## Roadmap
 
-The phased plan is in [ROADMAP.md](docs/ROADMAP.md). PH3 remains gated on PH2 real-device
-validation. See [Pro controls](docs/PRO_CONTROLS.md) and [RAW capture](docs/RAW_CAPTURE.md).
+The phased plan is in [ROADMAP.md](docs/ROADMAP.md). Real-device camera/RAW validation and future
+owned RGB preview/capture adapters remain required. See [Pro controls](docs/PRO_CONTROLS.md) and
+[RAW capture](docs/RAW_CAPTURE.md).
 
 ## License status
 

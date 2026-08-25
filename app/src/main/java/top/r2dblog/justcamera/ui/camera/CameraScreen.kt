@@ -43,6 +43,7 @@ fun CameraScreen(
     storagePermissionGranted: Boolean,
     requestPermissions: () -> Unit,
     openCapabilities: () -> Unit,
+    openFilters: () -> Unit,
 ) {
     val state by cameraController.state.collectAsState()
     val captureStatus by cameraController.captureStatus.collectAsState()
@@ -89,13 +90,23 @@ fun CameraScreen(
                     fontSize = 12.sp,
                 )
             }
-            Button(
-                onClick = openCapabilities,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White.copy(alpha = 0.16f),
-                ),
-            ) {
-                Text("CAP", color = Color.White, fontWeight = FontWeight.Bold)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = openFilters,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White.copy(alpha = 0.16f),
+                    ),
+                ) {
+                    Text("FILTER", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+                Button(
+                    onClick = openCapabilities,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color.White.copy(alpha = 0.16f),
+                    ),
+                ) {
+                    Text("CAP", color = Color.White, fontWeight = FontWeight.Bold)
+                }
             }
         }
 

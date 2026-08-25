@@ -1,7 +1,7 @@
 # Roadmap
 
-Roadmap phases are gates, not parallel feature lists. A phase starts only after the previous
-foundation is built, tested, device-validated, and reviewed.
+Roadmap phases are architecture/build gates, not parallel feature lists. Real-device validation is
+also tracked explicitly and may remain required after a phase's implementation review.
 
 ## PH1 — Camera Foundation (complete)
 
@@ -9,16 +9,18 @@ Camera2 discovery, capability domain model, lifecycle preview, camera switching,
 state/error/thread boundaries, capability UI, `ImageFrame`/pipeline/filter contracts, JNI proof,
 C plugin ABI foundation, tests, and architecture documentation.
 
-## PH2 — Pro Controls + RAW (current)
+## PH2 — Pro Controls + RAW (complete)
 
 Capability-driven focus/exposure/ISO/white-balance/zoom/lock controls, shared preview/still
 request state, observed metadata, RAW/DNG capture, multi-output status, and bounded timestamp
-pairing. Real-device preview, HAL control, and DNG validation remain the exit gate before PH3.
+pairing. Real-device preview, HAL control, and DNG validation remain required validation debt.
 
-## PH3 — Filter Engine + LUT
+## PH3 — Filter Engine + LUT (current)
 
-Working preview/final adjustment nodes, 3D LUT and `.cube` parsing, presets, and color-managed
-parameter UI.
+Linear-sRGB working frames, preview/final filter contract, typed parameters, registry, ordered
+chains, versioned presets, CPU adjustment references, compact 1D/3D LUTs, strict `.cube` parsing,
+trilinear interpolation, pipeline adapter, and schema-generated configuration UI. Live Camera2
+pixel rendering and captured-image encode integration remain explicit future adapters.
 
 ## PH4 — Native Image Processing
 
