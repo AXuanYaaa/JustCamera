@@ -79,6 +79,7 @@ fun CameraScreen(
                 cameraController = cameraController,
                 previewSize = previewSize,
                 cameraFacing = selectedCamera?.facing,
+                sensorOrientation = selectedCamera?.sensorOrientation,
                 modifier = Modifier.fillMaxSize(),
             )
         }

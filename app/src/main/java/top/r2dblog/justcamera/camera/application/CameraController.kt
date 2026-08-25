@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.SurfaceTexture
 import top.r2dblog.justcamera.camera.control.CameraControlState
 import top.r2dblog.justcamera.camera.device.CameraEngine
+import top.r2dblog.justcamera.camera.session.PreviewTransformReport
 import top.r2dblog.justcamera.hdr.capture.HdrMode
 
 class CameraController(context: Context) {
@@ -40,6 +41,9 @@ class CameraController(context: Context) {
 
     fun updatePreviewGeometry(width: Int, height: Int, rotationDegrees: Int) =
         engine.updatePreviewGeometry(width, height, rotationDegrees)
+
+    fun reportPreviewTransform(report: PreviewTransformReport) =
+        engine.reportPreviewTransform(report)
 
     fun detachPreview(texture: SurfaceTexture) = engine.detachPreview(texture)
     fun switchCamera() = engine.switchCamera()

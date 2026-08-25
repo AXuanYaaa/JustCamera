@@ -21,6 +21,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
+import android.util.Log
 import android.view.Surface
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,11 +64,15 @@ import top.r2dblog.justcamera.camera.raw.RawTopologyFallbackPolicy
 import top.r2dblog.justcamera.camera.session.CameraRecoveryPolicy
 import top.r2dblog.justcamera.camera.session.CameraSessionController
 import top.r2dblog.justcamera.camera.session.OrientationCalculator
+import top.r2dblog.justcamera.camera.session.PreviewBufferSize
 import top.r2dblog.justcamera.camera.session.PreviewGeometry
 import top.r2dblog.justcamera.camera.session.PreviewMeteringCropCalculator
+import top.r2dblog.justcamera.camera.session.PreviewRotation
 import top.r2dblog.justcamera.camera.session.PreviewSizeSelector
 import top.r2dblog.justcamera.camera.session.PreviewTransformCalculator
-import top.r2dblog.justcamera.camera.session.PreviewViewport
+import top.r2dblog.justcamera.camera.session.PreviewTransformReport
+import top.r2dblog.justcamera.camera.session.PreviewViewportSize
+import top.r2dblog.justcamera.camera.session.toPreviewBufferSize
 import top.r2dblog.justcamera.hdr.capture.HdrBracketConstraints
 import top.r2dblog.justcamera.hdr.capture.HdrCapabilityAssessment
 import top.r2dblog.justcamera.hdr.capture.HdrCapabilityPolicy
@@ -79,6 +84,7 @@ import top.r2dblog.justcamera.hdr.capture.HdrRequestTag
 import top.r2dblog.justcamera.hdr.capture.HdrStatus
 import top.r2dblog.justcamera.logging.JcLog
 import top.r2dblog.justcamera.logging.LogCategory
+import java.util.Locale
 import java.util.concurrent.Executor
 
 internal class CameraEngine(context: Context) {
@@ -144,6 +150,10 @@ internal class CameraEngine(context: Context) {
     private var retryRunnable: Runnable? = null
     private var requestController: CameraRequestController? = null
     private var activeCharacteristics: CameraCharacteristics? = null
+    private var configuredPreviewBufferSize: PreviewBufferSize? = null
+    private var lastPreviewTransformReport: PreviewTransformReport? = null
+    private var lastPreviewGeometryLog: String? = null
+    private var observedRotateAndCropMode: Int? = null
     private val rawTopologyFallback = RawTopologyFallbackPolicy()
     private var lastMetadataPublishTimestamp = Long.MIN_VALUE
 
@@ -211,9 +221,19 @@ internal class CameraEngine(context: Context) {
 
     fun updatePreviewGeometry(width: Int, height: Int, rotationDegrees: Int) {
         cameraHandler.post {
+            val changed = surfaceWidth != width || surfaceHeight != height ||
+                displayRotationDegrees != rotationDegrees
             surfaceWidth = width
             surfaceHeight = height
             displayRotationDegrees = rotationDegrees
+            if (changed) logPreviewGeometry("geometry_changed")
+        }
+    }
+
+    fun reportPreviewTransform(report: PreviewTransformReport) {
+        cameraHandler.post {
+            lastPreviewTransformReport = report
+            logPreviewGeometry("transform_applied", report)
         }
     }
 
@@ -274,10 +294,12 @@ internal class CameraEngine(context: Context) {
             if (surfaceWidth <= 0 || surfaceHeight <= 0) return@post
             val bufferPoint = PreviewTransformCalculator.calculate(
                 geometry = PreviewGeometry(
-                    bufferSize = bufferSize,
+                    bufferSize = bufferSize.toPreviewBufferSize(),
+                    sensorOrientation = PreviewRotation.fromDegrees(camera.sensorOrientation),
+                    displayRotation = PreviewRotation.fromDegrees(displayRotationDegrees),
                     cameraFacing = camera.facing,
                 ),
-                viewport = PreviewViewport(surfaceWidth, surfaceHeight),
+                viewportSize = PreviewViewportSize(surfaceWidth, surfaceHeight),
             ).mapNormalizedViewportToBuffer(normalizedX, normalizedY)
             val zoom = controller.requestedState.zoomRatio
             val crop = if (zoom >= 1f) ZoomCropCalculator.crop(activeArray, zoom) else activeArray
@@ -422,7 +444,7 @@ internal class CameraEngine(context: Context) {
                 ?.getOutputSizes(SurfaceTexture::class.java)
                 .orEmpty()
                 .map { ImageSize(it.width, it.height) }
-            val selectedSize = PreviewSizeSelector.select(choices, surfaceWidth, surfaceHeight)
+            val selectedSize = PreviewSizeSelector.select(choices)
             if (selectedSize == null) {
                 failAndClose(
                     CameraError(
@@ -434,8 +456,13 @@ internal class CameraEngine(context: Context) {
                 return
             }
             texture.setDefaultBufferSize(selectedSize.width, selectedSize.height)
+            configuredPreviewBufferSize = selectedSize.toPreviewBufferSize()
             sessionController.replacePreviewSurface(texture)
             _previewSize.value = selectedSize
+            check(configuredPreviewBufferSize == _previewSize.value?.toPreviewBufferSize()) {
+                "Selected preview size and SurfaceTexture default buffer size diverged"
+            }
+            logPreviewGeometry("buffer_configured")
             val callbackGeneration = ++cameraCallbackGeneration
             transition(CameraEvent.Open(camera.cameraId))
             cameraManager.openCamera(
@@ -630,7 +657,7 @@ internal class CameraEngine(context: Context) {
                 device.createCaptureSession(
                     SessionConfiguration(
                         SessionConfiguration.SESSION_REGULAR,
-                        outputSurfaces.map(::OutputConfiguration),
+                        createOutputConfigurations(outputSurfaces, previewSurface),
                         Executor { runnable -> cameraHandler.post(runnable) },
                         sessionCallback,
                     ),
@@ -723,7 +750,7 @@ internal class CameraEngine(context: Context) {
                 device.createCaptureSession(
                     SessionConfiguration(
                         SessionConfiguration.SESSION_REGULAR,
-                        surfaces.map(::OutputConfiguration),
+                        createOutputConfigurations(surfaces, previewSurface),
                         Executor { runnable -> cameraHandler.post(runnable) },
                         sessionCallback,
                     ),
@@ -778,10 +805,12 @@ internal class CameraEngine(context: Context) {
             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(surface)
                 requestController?.apply(this)
+                applyPreviewRotateAndCropPolicy(this)
             }.build()
             session.setRepeatingRequest(request, previewCaptureCallback, cameraHandler)
             cancelScheduledRetry(resetAttempts = true)
             transition(CameraEvent.PreviewStarted(cameraId))
+            logPreviewGeometry("preview_started")
             JcLog.info(LogCategory.CAMERA, "Preview started on camera $cameraId")
         } catch (error: CameraAccessException) {
             failAndClose(accessError("Unable to start camera $cameraId preview", error))
@@ -807,6 +836,7 @@ internal class CameraEngine(context: Context) {
             result: TotalCaptureResult,
         ) {
             if (session === sessionController.captureSession) {
+                observeRotateAndCrop(result)
                 publishMetadata(result, throttled = true)
             }
         }
@@ -823,6 +853,9 @@ internal class CameraEngine(context: Context) {
             return
         }
         publishRequestedControls(controller)
+        if (previous.zoomRatio != update.state.zoomRatio) {
+            logPreviewGeometry("zoom_changed")
+        }
         _controlError.value = update.messages.takeIf { it.isNotEmpty() }?.let {
             CameraError(
                 CameraErrorCode.INVALID_CONTROL_VALUE,
@@ -844,6 +877,7 @@ internal class CameraEngine(context: Context) {
             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(surface)
                 requestController?.apply(this)
+                applyPreviewRotateAndCropPolicy(this)
             }.build()
             session.setRepeatingRequest(request, previewCaptureCallback, cameraHandler)
         } catch (error: IllegalArgumentException) {
@@ -880,6 +914,7 @@ internal class CameraEngine(context: Context) {
             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
                 addTarget(surface)
                 controller.apply(this)
+                applyPreviewRotateAndCropPolicy(this)
                 set(
                     CaptureRequest.CONTROL_AF_TRIGGER,
                     if (triggerStart) {
@@ -1210,6 +1245,134 @@ internal class CameraEngine(context: Context) {
         _captureMetadata.value = controller.metadata(result)
     }
 
+    private fun createOutputConfigurations(
+        surfaces: List<Surface>,
+        previewSurface: Surface,
+    ): List<OutputConfiguration> = surfaces.map { surface ->
+        OutputConfiguration(surface).apply {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                surface === previewSurface
+            ) {
+                // The producer owns front-preview mirroring. The app matrix never mirrors again.
+                setMirrorMode(OutputConfiguration.MIRROR_MODE_AUTO)
+            }
+        }
+    }
+
+    private fun applyPreviewRotateAndCropPolicy(builder: CaptureRequest.Builder) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val availableModes = availableRotateAndCropModes()
+        if (CameraMetadata.SCALER_ROTATE_AND_CROP_NONE in availableModes) {
+            // Own preview rotation in the application only after confirming NONE is supported.
+            builder.set(
+                CaptureRequest.SCALER_ROTATE_AND_CROP,
+                CameraMetadata.SCALER_ROTATE_AND_CROP_NONE,
+            )
+        }
+    }
+
+    private fun observeRotateAndCrop(result: TotalCaptureResult) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
+        val observed = result.get(CaptureResult.SCALER_ROTATE_AND_CROP) ?: return
+        if (observedRotateAndCropMode != observed) {
+            observedRotateAndCropMode = observed
+            logPreviewGeometry("rotate_crop_observed")
+        }
+    }
+
+    private fun availableRotateAndCropModes(): List<Int> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return emptyList()
+        return activeCharacteristics
+            ?.get(CameraCharacteristics.SCALER_AVAILABLE_ROTATE_AND_CROP_MODES)
+            ?.toList()
+            .orEmpty()
+    }
+
+    private fun logPreviewGeometry(
+        stage: String,
+        report: PreviewTransformReport? = lastPreviewTransformReport,
+    ) {
+        checkCameraThread()
+        val camera = _selectedCamera.value
+        val selected = _previewSize.value?.toPreviewBufferSize()
+        val relativeRotation = camera?.let {
+            OrientationCalculator.relativePreviewRotationDegrees(
+                it.sensorOrientation,
+                displayRotationDegrees,
+                it.facing,
+            )
+        }
+        val currentCrop = run {
+            val activeArray = camera?.activeArray
+            val zoomRatio = requestController?.requestedState?.zoomRatio
+            if (activeArray != null && zoomRatio != null && zoomRatio >= 1f) {
+                ZoomCropCalculator.crop(activeArray, zoomRatio)
+            } else {
+                activeArray
+            }
+        }
+        val modes = availableRotateAndCropModes()
+        val rotateCropRequest = when {
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.S -> "unavailable"
+            CameraMetadata.SCALER_ROTATE_AND_CROP_NONE in modes -> "NONE(app-owned)"
+            else -> "DEFAULT_AUTO"
+        }
+        val reportMatchesSelected = report?.bufferSize == selected
+        val surfaceIdentity = surfaceTexture?.let(System::identityHashCode)
+        val sameSurfaceTexture = report?.surfaceTextureIdentity == surfaceIdentity
+        val reportMatchesEngineGeometry = report != null &&
+            report.displayRotation.degrees == displayRotationDegrees &&
+            report.relativeRotation.degrees == relativeRotation
+        val message = buildString {
+            append("stage=").append(stage)
+            append(" camera=").append(camera?.cameraId ?: "none")
+            append(" facing=").append(camera?.facing ?: "unknown")
+            append(" sensor=").append(camera?.sensorOrientation ?: "unknown")
+            append(" display=").append(displayRotationDegrees)
+            append(" relative=").append(relativeRotation ?: "unknown")
+            append(" reportDisplay=").append(report?.displayRotation?.degrees ?: "unknown")
+            append(" reportRelative=").append(report?.relativeRotation?.degrees ?: "unknown")
+            append(" view=").append(report?.viewportSize ?: "${surfaceWidth}x$surfaceHeight")
+            append(" window=").append(report?.windowSize ?: "unknown")
+            append(" screen=").append(report?.screenOrientation ?: "unknown")
+            append(" selected=").append(selected ?: "unknown")
+            append(" defaultBufferApplied=").append(configuredPreviewBufferSize ?: "unknown")
+            append(" reportMatchesSelected=").append(reportMatchesSelected)
+            append(" reportMatchesEngineGeometry=").append(reportMatchesEngineGeometry)
+            append(" sameSurfaceTexture=").append(sameSurfaceTexture)
+            append(" mirrorOwner=OUTPUT_CONFIGURATION_AUTO")
+            append(" rotateCropAvailable=")
+                .append(modes.joinToString(prefix = "[", postfix = "]", transform = ::rotateCropName))
+            append(" rotateCropRequest=").append(rotateCropRequest)
+            append(" rotateCropObserved=").append(rotateCropName(observedRotateAndCropMode))
+            append(" zoomCrop=").append(
+                currentCrop?.let { "${it.left},${it.top},${it.right},${it.bottom}" } ?: "unknown",
+            )
+            append(" intrinsicMatrix=").append(formatMatrix(report?.intrinsicMatrixValues))
+            append(" matrix=").append(formatMatrix(report?.textureViewMatrixValues))
+            append(" finalMatrix=").append(formatMatrix(report?.finalMatrixValues))
+        }
+        if (message != lastPreviewGeometryLog) {
+            lastPreviewGeometryLog = message
+            Log.i(PREVIEW_GEOMETRY_TAG, message)
+        }
+    }
+
+    private fun rotateCropName(mode: Int?): String = when (mode) {
+        null -> "unknown"
+        CameraMetadata.SCALER_ROTATE_AND_CROP_NONE -> "NONE"
+        CameraMetadata.SCALER_ROTATE_AND_CROP_90 -> "90"
+        CameraMetadata.SCALER_ROTATE_AND_CROP_180 -> "180"
+        CameraMetadata.SCALER_ROTATE_AND_CROP_270 -> "270"
+        CameraMetadata.SCALER_ROTATE_AND_CROP_AUTO -> "AUTO"
+        else -> "unknown($mode)"
+    }
+
+    private fun formatMatrix(values: List<Float>?): String = values?.joinToString(
+        prefix = "[",
+        postfix = "]",
+    ) { String.format(Locale.US, "%.5f", it) } ?: "unknown"
+
     private fun setEffectiveRawAvailability(available: Boolean) {
         _rawCaptureAvailable.value = available
         requestController?.let { controller ->
@@ -1255,6 +1418,10 @@ internal class CameraEngine(context: Context) {
             hdrCaptureCoordinator::retireReader,
         )
         activeCharacteristics = null
+        configuredPreviewBufferSize = null
+        lastPreviewTransformReport = null
+        lastPreviewGeometryLog = null
+        observedRotateAndCropMode = null
         _previewSize.value = null
         _rawCaptureAvailable.value = false
         lastMetadataPublishTimestamp = Long.MIN_VALUE
@@ -1280,6 +1447,10 @@ internal class CameraEngine(context: Context) {
             hdrCaptureCoordinator::retireReader,
         )
         activeCharacteristics = null
+        configuredPreviewBufferSize = null
+        lastPreviewTransformReport = null
+        lastPreviewGeometryLog = null
+        observedRotateAndCropMode = null
         _previewSize.value = null
         _rawCaptureAvailable.value = false
         publishError(error)
@@ -1360,5 +1531,6 @@ internal class CameraEngine(context: Context) {
         const val HDR_READER_MAX_IMAGES = 4
         const val TAP_FOCUS_HOLD_MS = 2_000L
         const val METADATA_INTERVAL_NS = 100_000_000L
+        const val PREVIEW_GEOMETRY_TAG = "JC_PREVIEW_GEOMETRY"
     }
 }

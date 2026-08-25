@@ -1,7 +1,12 @@
 package top.r2dblog.justcamera.ui.camera
 
+import android.content.Context
+import android.content.res.Configuration
 import android.graphics.Matrix
 import android.graphics.SurfaceTexture
+import android.hardware.display.DisplayManager
+import android.os.Handler
+import android.os.Looper
 import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -13,14 +18,18 @@ import top.r2dblog.justcamera.camera.application.CameraController
 import top.r2dblog.justcamera.camera.model.CameraFacing
 import top.r2dblog.justcamera.camera.model.ImageSize
 import top.r2dblog.justcamera.camera.session.PreviewGeometry
+import top.r2dblog.justcamera.camera.session.PreviewRotation
 import top.r2dblog.justcamera.camera.session.PreviewTransformCalculator
-import top.r2dblog.justcamera.camera.session.PreviewViewport
+import top.r2dblog.justcamera.camera.session.PreviewTransformReport
+import top.r2dblog.justcamera.camera.session.PreviewViewportSize
+import top.r2dblog.justcamera.camera.session.toPreviewBufferSize
 
 @Composable
 fun CameraPreview(
     cameraController: CameraController,
     previewSize: ImageSize?,
     cameraFacing: CameraFacing?,
+    sensorOrientation: Int?,
     modifier: Modifier = Modifier,
 ) {
     AndroidView(
@@ -35,19 +44,18 @@ fun CameraPreview(
             }
         },
         factory = { context ->
-            TextureView(context).apply {
+            PreviewTextureView(context).apply {
                 surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                     override fun onSurfaceTextureAvailable(
                         texture: SurfaceTexture,
                         width: Int,
                         height: Int,
                     ) {
-                        cameraController.attachPreview(
-                            texture,
-                            width,
-                            height,
-                            displayRotationDegrees(display?.rotation ?: Surface.ROTATION_0),
+                        val rotation = displayRotationDegrees(
+                            display?.rotation ?: Surface.ROTATION_0,
                         )
+                        cameraController.attachPreview(texture, width, height, rotation)
+                        onPreviewGeometryChanged?.invoke()
                     }
 
                     override fun onSurfaceTextureSizeChanged(
@@ -55,20 +63,12 @@ fun CameraPreview(
                         width: Int,
                         height: Int,
                     ) {
-                        cameraController.updatePreviewGeometry(
-                            width,
-                            height,
-                            displayRotationDegrees(display?.rotation ?: Surface.ROTATION_0),
-                        )
-                        configureTransform(
-                            view = this@apply,
-                            buffer = previewSize,
-                            facing = cameraFacing,
-                        )
+                        onPreviewGeometryChanged?.invoke()
                     }
 
                     override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
                         cameraController.detachPreview(texture)
+                        lastTransformReport = null
                         return true
                     }
 
@@ -77,16 +77,60 @@ fun CameraPreview(
             }
         },
         update = { view ->
+            view.onPreviewGeometryChanged = {
+                if (view.isAvailable) {
+                    cameraController.updatePreviewGeometry(
+                        view.width,
+                        view.height,
+                        displayRotationDegrees(view.display?.rotation ?: Surface.ROTATION_0),
+                    )
+                    configureTransform(
+                        view = view,
+                        controller = cameraController,
+                        buffer = previewSize,
+                        facing = cameraFacing,
+                        sensorOrientation = sensorOrientation,
+                    )
+                }
+            }
             if (view.isAvailable) {
-                cameraController.updatePreviewGeometry(
-                    view.width,
-                    view.height,
-                    displayRotationDegrees(view.display?.rotation ?: Surface.ROTATION_0),
-                )
-                configureTransform(view, previewSize, cameraFacing)
+                view.onPreviewGeometryChanged?.invoke()
             }
         },
     )
+}
+
+private class PreviewTextureView(context: Context) : TextureView(context) {
+    var lastTransformReport: PreviewTransformReport? = null
+    var onPreviewGeometryChanged: (() -> Unit)? = null
+    private val displayManager = context.getSystemService(DisplayManager::class.java)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var lastDisplayRotation: Int? = null
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) = Unit
+        override fun onDisplayRemoved(displayId: Int) = Unit
+
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId != display?.displayId) return
+            val rotation = display?.rotation ?: return
+            if (rotation != lastDisplayRotation) {
+                lastDisplayRotation = rotation
+                onPreviewGeometryChanged?.invoke()
+            }
+        }
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        lastDisplayRotation = display?.rotation
+        displayManager.registerDisplayListener(displayListener, mainHandler)
+    }
+
+    override fun onDetachedFromWindow() {
+        displayManager.unregisterDisplayListener(displayListener)
+        onPreviewGeometryChanged = null
+        super.onDetachedFromWindow()
+    }
 }
 
 private fun displayRotationDegrees(rotation: Int): Int = when (rotation) {
@@ -97,44 +141,58 @@ private fun displayRotationDegrees(rotation: Int): Int = when (rotation) {
 }
 
 private fun configureTransform(
-    view: TextureView,
+    view: PreviewTextureView,
+    controller: CameraController,
     buffer: ImageSize?,
     facing: CameraFacing?,
+    sensorOrientation: Int?,
 ) {
-    if (view.width == 0 || view.height == 0 || buffer == null || facing == null) return
+    if (view.width == 0 || view.height == 0 || buffer == null || facing == null ||
+        sensorOrientation == null
+    ) {
+        view.lastTransformReport = null
+        return
+    }
+    val displayRotation = PreviewRotation.fromDegrees(
+        displayRotationDegrees(view.display?.rotation ?: Surface.ROTATION_0),
+    )
+    val viewport = PreviewViewportSize(view.width, view.height)
     val transform = PreviewTransformCalculator.calculate(
         geometry = PreviewGeometry(
-            bufferSize = buffer,
+            bufferSize = buffer.toPreviewBufferSize(),
+            sensorOrientation = PreviewRotation.fromDegrees(sensorOrientation),
+            displayRotation = displayRotation,
             cameraFacing = facing,
         ),
-        viewport = PreviewViewport(view.width, view.height),
+        viewportSize = viewport,
     )
 
-    // Camera2/SurfaceTexture owns sensor/display orientation. TextureView first stretches that
-    // oriented producer content to view bounds, so this axis-aligned adapter only compensates the
-    // implicit stretch to match the verified uniform CENTER_CROP mapping. It never rotates.
-    val bounds = transform.transformedBounds
-    val implicitStretchCompensationX = bounds.width / view.width
-    val implicitStretchCompensationY = bounds.height / view.height
-    val adapterScaleX = if (transform.geometry.mirrorHorizontally) {
-        -implicitStretchCompensationX
-    } else {
-        implicitStretchCompensationX
-    }
-    val adapterTranslationX = if (transform.geometry.mirrorHorizontally) {
-        bounds.right
-    } else {
-        transform.translationX
-    }
+    // This one matrix is final * inverse(TextureView intrinsic). It cancels the intermediate
+    // producer stretch and leaves rotation + one uniform CENTER_CROP scale around the view center.
     view.setTransform(
-        Matrix().apply {
-            setValues(
-                floatArrayOf(
-                    adapterScaleX, 0f, adapterTranslationX,
-                    0f, implicitStretchCompensationY, transform.translationY,
-                    0f, 0f, 1f,
-                ),
-            )
-        },
+        Matrix().apply { setValues(transform.textureViewMatrix.values.toFloatArray()) },
     )
+
+    val rootWidth = view.rootView.width.takeIf { it > 0 } ?: view.width
+    val rootHeight = view.rootView.height.takeIf { it > 0 } ?: view.height
+    val report = PreviewTransformReport(
+        bufferSize = buffer.toPreviewBufferSize(),
+        viewportSize = viewport,
+        windowSize = PreviewViewportSize(rootWidth, rootHeight),
+        screenOrientation = when (view.resources.configuration.orientation) {
+            Configuration.ORIENTATION_LANDSCAPE -> "landscape"
+            Configuration.ORIENTATION_PORTRAIT -> "portrait"
+            else -> "undefined"
+        },
+        displayRotation = displayRotation,
+        relativeRotation = transform.geometry.relativeRotation,
+        surfaceTextureIdentity = System.identityHashCode(view.surfaceTexture),
+        intrinsicMatrixValues = transform.textureViewIntrinsicMatrix.values,
+        textureViewMatrixValues = transform.textureViewMatrix.values,
+        finalMatrixValues = transform.bufferToViewportMatrix.values,
+    )
+    if (view.lastTransformReport != report) {
+        view.lastTransformReport = report
+        controller.reportPreviewTransform(report)
+    }
 }

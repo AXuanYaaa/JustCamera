@@ -15,19 +15,39 @@ camera does not discard successfully mapped cameras.
 ## Preview
 
 - `TextureView` is used because it gives reliable Camera2 `Surface` interop plus a transform matrix.
-- Preview sizes come from `SurfaceTexture` output sizes. Selection prefers the closest view aspect
-  ratio and bounds normal preview work to 1080p when the HAL exposes such a choice.
-- The HAL buffer size is set before the `Surface` and capture session are created.
-- Camera2/SurfaceTexture owns the sensor-to-display orientation supplied by the producer pipeline.
-  The UI must not apply that rotation a second time. `PreviewGeometry` therefore contains only
-  buffer size and facing. `PreviewTransformCalculator` applies one uniform `CENTER_CROP` scale,
-  centered translation, and an independent front-camera mirror. Its source-to-viewport scale is
-  equal on both axes; `CameraPreview` uses an axis-aligned adapter to compensate only for
-  TextureView's implicit buffer-to-view stretch, with no rotation matrix.
-- Tap focus uses the inverse scale/translation/mirror transform, then center-crops the
+- Preview sizes come from `SurfaceTexture` output sizes. Selection is independent of the screen
+  ratio: prefer the largest 16:9 stream whose long/short edges fit 1920x1080, otherwise the
+  largest bounded stream. If the HAL offers no bounded stream, use its smallest advertised size.
+  A 20:9 phone is therefore a center-crop destination, not a requested producer aspect ratio.
+- `PreviewBufferSize` is the exact unswapped Camera2 stream size passed once to
+  `SurfaceTexture.setDefaultBufferSize` before the same `SurfaceTexture` is wrapped and used by
+  the capture session. `PreviewViewportSize` is always the TextureView/window coordinate space.
+- Preview and JPEG orientation are independent contracts. Preview relative rotation follows
+  `(sensorOrientation - displayRotation * sign + 360) % 360`, where `sign` is `1` for front and
+  `-1` for other cameras. A 90/270 result swaps effective buffer dimensions for scale/crop math.
+- `PreviewTransformCalculator` owns one producer-buffer-to-viewport mapping: relative rotation,
+  one uniform `CENTER_CROP` scale, centering, and the effective producer mirror. The full-screen
+  TextureView remains the viewport. Its producer transform already applies sensor orientation,
+  front mirroring, and an intermediate full-view stretch; the one application matrix is derived
+  as `final * inverse(TextureView intrinsic)`. Tests compose those exact matrices and prove equal
+  basis-vector lengths, zero dot product, full coverage, centered output, and circle invariance.
+- Front preview mirroring belongs to the producer. API 33+ preview `OutputConfiguration` is
+  explicitly `MIRROR_MODE_AUTO`; earlier versions retain their SurfaceTexture default behavior.
+  The application transform does not mirror again.
+- On API 31+, preview requests opt out of HAL rotate-and-crop only after `NONE` appears in
+  `SCALER_AVAILABLE_ROTATE_AND_CROP_MODES`. Capture results record the actual selected mode, so an
+  unexpected HAL rotation cannot remain hidden or be double-applied by the geometry model.
+- Tap focus uses the inverse of the same final preview matrix, then center-crops the
   active-array/zoom region to the preview stream aspect before creating metering rectangles.
   Display crop, sensor-stream crop, and front-camera mirroring therefore cannot silently offset
   the metering region.
+- `JC_PREVIEW_GEOMETRY` logs only configuration changes (never frames) and includes camera/facing,
+  sensor/display/relative rotation, view/window/screen geometry, selected and applied buffer size,
+  SurfaceTexture identity agreement, mirror owner, available/requested/observed rotate-and-crop,
+  zoom crop, intrinsic producer matrix, TextureView matrix, and final matrix. Validate with
+  `adb logcat -s JC_PREVIEW_GEOMETRY`.
+- The TextureView registers a display listener while attached so a 180-degree rotation, which can
+  leave view dimensions and the Android configuration unchanged, still recalculates geometry.
 - Capture orientation remains independent from preview display geometry.
 - A configuration change recreates the activity and closes/reopens Camera2. Background/foreground
   transitions close in `onStop` and reopen in `onStart` when permission and a surface are ready.
