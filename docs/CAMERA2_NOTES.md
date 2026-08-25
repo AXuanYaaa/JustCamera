@@ -34,6 +34,24 @@ capture failures are converted into project errors and logged by category. There
 catch blocks. Reopening after a device/service error should be validated on hardware because HAL
 recovery behavior varies by vendor.
 
+## Error recovery and ownership
+
+- `CameraSessionController` exclusively owns the current `CameraDevice`, capture session,
+  `ImageReader`, and preview `Surface`; only the camera looper may mutate them.
+- TextureView owns `SurfaceTexture`. Normal close and failure recovery release the `Surface`
+  wrapper but preserve `SurfaceTexture` while the view remains available.
+- Session configure failure, synchronous session-creation failure, preview request/repeating
+  failure, disconnect, and current-generation fatal device errors all use the same
+  close-before-error path.
+- Each open attempt has a generation token. Late device/session callbacks close only their stale
+  object and cannot tear down or transition a newer attempt.
+- Recoverable errors retain selected camera and surface prerequisites. Up to three retries use
+  short exponential backoff; preview success clears the retry budget. Missing prerequisites wait
+  for the next permission/surface/start event rather than spinning.
+- Policy-disabled and unsupported-capability errors are non-recoverable. Camera switch or another
+  explicit lifecycle action can establish a new clean state.
+- A capture-request failure does not close an otherwise healthy repeating preview session.
+
 ## Device validation checklist
 
 1. First permission grant, denial, “don’t ask again,” and settings re-grant.

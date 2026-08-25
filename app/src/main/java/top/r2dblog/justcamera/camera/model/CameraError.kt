@@ -48,8 +48,13 @@ object CameraStateReducer {
         CameraEvent.Close -> CameraState.Closed
         is CameraEvent.Failed -> CameraState.Error(event.error)
         is CameraEvent.Open -> when (current) {
-            CameraState.Closed, CameraState.PermissionRequired, is CameraState.Error ->
+            CameraState.Closed, CameraState.PermissionRequired ->
                 CameraState.Opening(event.cameraId)
+            is CameraState.Error -> if (current.error.recoverable) {
+                CameraState.Opening(event.cameraId)
+            } else {
+                current
+            }
             else -> current
         }
         is CameraEvent.DeviceOpened -> when (current) {

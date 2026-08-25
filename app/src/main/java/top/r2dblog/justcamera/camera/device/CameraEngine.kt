@@ -18,6 +18,7 @@ import android.media.ImageReader
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.view.Surface
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +38,8 @@ import top.r2dblog.justcamera.camera.model.CameraState
 import top.r2dblog.justcamera.camera.model.CameraStateReducer
 import top.r2dblog.justcamera.camera.model.CaptureStatus
 import top.r2dblog.justcamera.camera.model.ImageSize
+import top.r2dblog.justcamera.camera.session.CameraRecoveryPolicy
+import top.r2dblog.justcamera.camera.session.CameraSessionController
 import top.r2dblog.justcamera.camera.session.OrientationCalculator
 import top.r2dblog.justcamera.camera.session.PreviewSizeSelector
 import top.r2dblog.justcamera.logging.JcLog
@@ -60,6 +63,8 @@ internal class CameraEngine(context: Context) {
     private val imageThread = HandlerThread("JustCamera-ImageAcquire").apply { start() }
     private val cameraHandler = Handler(cameraThread.looper)
     private val imageHandler = Handler(imageThread.looper)
+    private val sessionController = CameraSessionController(cameraThread.looper)
+    private val recoveryPolicy = CameraRecoveryPolicy()
 
     private val _state = MutableStateFlow<CameraState>(CameraState.Closed)
     val state: StateFlow<CameraState> = _state.asStateFlow()
@@ -81,10 +86,9 @@ internal class CameraEngine(context: Context) {
     private var surfaceWidth: Int = 0
     private var surfaceHeight: Int = 0
     private var displayRotationDegrees: Int = 0
-    private var previewSurface: Surface? = null
-    private var cameraDevice: CameraDevice? = null
-    private var captureSession: CameraCaptureSession? = null
-    private var imageReader: ImageReader? = null
+    private var cameraCallbackGeneration = 0L
+    private var completedRetryAttempts = 0
+    private var retryRunnable: Runnable? = null
 
     fun updatePermissions(cameraGranted: Boolean, storageGranted: Boolean) {
         cameraPermissionGranted = cameraGranted
@@ -194,12 +198,12 @@ internal class CameraEngine(context: Context) {
 
     fun captureJpeg() {
         cameraHandler.post {
-            val device = cameraDevice
-            val session = captureSession
-            val reader = imageReader
+            val device = sessionController.cameraDevice
+            val session = sessionController.captureSession
+            val reader = sessionController.imageReader
             val camera = _selectedCamera.value
             if (device == null || session == null || reader == null || camera == null) {
-                fail(
+                failAndClose(
                     CameraError(
                         CameraErrorCode.CAMERA_UNAVAILABLE,
                         "Camera is not ready to capture",
@@ -263,7 +267,7 @@ internal class CameraEngine(context: Context) {
             }
             cameraHandler.post {
                 if (result.cameras.isEmpty()) {
-                    fail(
+                    publishError(
                         result.errors.firstOrNull() ?: CameraError(
                             CameraErrorCode.CAMERA_UNAVAILABLE,
                             "No Camera2 devices were discovered",
@@ -282,8 +286,11 @@ internal class CameraEngine(context: Context) {
 
     @SuppressLint("MissingPermission")
     private fun openSelectedCameraIfReady() {
-        if (!running || !cameraPermissionGranted || cameraDevice != null ||
-            _state.value is CameraState.Opening
+        checkCameraThread()
+        val currentState = _state.value
+        if (!running || !cameraPermissionGranted ||
+            sessionController.cameraDevice != null || currentState is CameraState.Opening ||
+            currentState is CameraState.Error && !currentState.error.recoverable
         ) return
         val texture = surfaceTexture ?: return
         val camera = _selectedCamera.value ?: return
@@ -297,7 +304,7 @@ internal class CameraEngine(context: Context) {
                 .map { ImageSize(it.width, it.height) }
             val selectedSize = PreviewSizeSelector.select(choices, surfaceWidth, surfaceHeight)
             if (selectedSize == null) {
-                fail(
+                failAndClose(
                     CameraError(
                         CameraErrorCode.UNSUPPORTED_CAPABILITY,
                         "Camera ${camera.cameraId} has no SurfaceTexture preview sizes",
@@ -307,17 +314,28 @@ internal class CameraEngine(context: Context) {
                 return
             }
             texture.setDefaultBufferSize(selectedSize.width, selectedSize.height)
-            previewSurface?.release()
-            previewSurface = Surface(texture)
+            sessionController.replacePreviewSurface(texture)
             _previewSize.value = selectedSize
+            val callbackGeneration = ++cameraCallbackGeneration
             transition(CameraEvent.Open(camera.cameraId))
-            cameraManager.openCamera(camera.cameraId, deviceCallback(camera.cameraId), cameraHandler)
+            cameraManager.openCamera(
+                camera.cameraId,
+                deviceCallback(camera.cameraId, callbackGeneration),
+                cameraHandler,
+            )
         } catch (error: SecurityException) {
-            fail(CameraError(CameraErrorCode.PERMISSION_DENIED, "Camera permission denied", error))
+            failAndClose(
+                CameraError(
+                    CameraErrorCode.PERMISSION_DENIED,
+                    "Camera permission denied",
+                    error,
+                    recoverable = false,
+                ),
+            )
         } catch (error: CameraAccessException) {
-            fail(accessError("Unable to open camera ${camera.cameraId}", error))
+            failAndClose(accessError("Unable to open camera ${camera.cameraId}", error))
         } catch (error: IllegalArgumentException) {
-            fail(
+            failAndClose(
                 CameraError(
                     CameraErrorCode.CAMERA_UNAVAILABLE,
                     "Camera ${camera.cameraId} is no longer available",
@@ -327,22 +345,29 @@ internal class CameraEngine(context: Context) {
         }
     }
 
-    private fun deviceCallback(cameraId: String) = object : CameraDevice.StateCallback() {
+    private fun deviceCallback(
+        cameraId: String,
+        callbackGeneration: Long,
+    ) = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
-            if (!running || surfaceTexture == null ||
-                _selectedCamera.value?.cameraId != cameraId
+            if (!isCurrentCallback(cameraId, callbackGeneration) ||
+                !running || surfaceTexture == null
             ) {
-                camera.close()
+                sessionController.closeUnownedDevice(camera)
                 return
             }
-            cameraDevice = camera
+            sessionController.adoptCameraDevice(camera)
             transition(CameraEvent.DeviceOpened(cameraId))
-            configureSession(camera, cameraId)
+            configureSession(camera, cameraId, callbackGeneration)
         }
 
         override fun onDisconnected(camera: CameraDevice) {
-            closeResources(emitClosed = false)
-            fail(
+            if (!isCurrentCallback(cameraId, callbackGeneration)) {
+                sessionController.closeUnownedDevice(camera)
+                return
+            }
+            sessionController.adoptCameraDevice(camera)
+            failAndClose(
                 CameraError(
                     CameraErrorCode.DISCONNECTED,
                     "Camera $cameraId disconnected",
@@ -351,28 +376,33 @@ internal class CameraEngine(context: Context) {
         }
 
         override fun onError(camera: CameraDevice, error: Int) {
-            closeResources(emitClosed = false)
-            fail(
-                CameraError(
-                    CameraErrorCode.CAMERA_UNAVAILABLE,
-                    "Camera $cameraId error: ${deviceErrorName(error)}",
-                ),
-            )
+            if (!isCurrentCallback(cameraId, callbackGeneration)) {
+                sessionController.closeUnownedDevice(camera)
+                return
+            }
+            sessionController.adoptCameraDevice(camera)
+            failAndClose(deviceError(cameraId, error))
         }
     }
 
-    private fun configureSession(device: CameraDevice, cameraId: String) {
-        val surface = previewSurface
+    private fun configureSession(
+        device: CameraDevice,
+        cameraId: String,
+        callbackGeneration: Long,
+    ) {
+        val surface = sessionController.previewSurface
         val capabilities = _selectedCamera.value
         if (surface == null || !surface.isValid || capabilities == null) {
-            fail(CameraError(CameraErrorCode.INVALID_SURFACE, "Preview surface is invalid"))
+            failAndClose(
+                CameraError(CameraErrorCode.INVALID_SURFACE, "Preview surface is invalid"),
+            )
             return
         }
         val jpegSize = capabilities.sizesFor(
             top.r2dblog.justcamera.camera.model.CameraOutputFormat.JPEG,
         ).maxByOrNull { it.area }
         if (jpegSize == null) {
-            fail(
+            failAndClose(
                 CameraError(
                     CameraErrorCode.UNSUPPORTED_CAPABILITY,
                     "Camera $cameraId does not expose JPEG output",
@@ -382,29 +412,32 @@ internal class CameraEngine(context: Context) {
             return
         }
 
-        imageReader?.close()
-        imageReader = ImageReader.newInstance(
-            jpegSize.width,
-            jpegSize.height,
-            ImageFormat.JPEG,
-            2,
-        ).apply { setOnImageAvailableListener(::onImageAvailable, imageHandler) }
-
         try {
+            val reader = ImageReader.newInstance(
+                jpegSize.width,
+                jpegSize.height,
+                ImageFormat.JPEG,
+                2,
+            ).apply { setOnImageAvailableListener(::onImageAvailable, imageHandler) }
+            sessionController.replaceImageReader(reader)
+
             transition(CameraEvent.Configure(cameraId))
             val sessionCallback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
-                    if (device != cameraDevice || !running) {
-                        session.close()
+                    if (!isCurrentCallback(cameraId, callbackGeneration) ||
+                        device !== sessionController.cameraDevice || !running
+                    ) {
+                        sessionController.closeUnownedSession(session)
                         return
                     }
-                    captureSession = session
+                    sessionController.adoptCaptureSession(session)
                     startPreview(device, session, surface, cameraId)
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
-                    session.close()
-                    fail(
+                    sessionController.closeUnownedSession(session)
+                    if (!isCurrentCallback(cameraId, callbackGeneration)) return
+                    failAndClose(
                         CameraError(
                             CameraErrorCode.SESSION_CONFIGURATION_FAILED,
                             "Camera $cameraId preview session configuration failed",
@@ -418,7 +451,7 @@ internal class CameraEngine(context: Context) {
                         SessionConfiguration.SESSION_REGULAR,
                         listOf(
                             OutputConfiguration(surface),
-                            OutputConfiguration(imageReader!!.surface),
+                            OutputConfiguration(reader.surface),
                         ),
                         Executor { runnable -> cameraHandler.post(runnable) },
                         sessionCallback,
@@ -427,18 +460,26 @@ internal class CameraEngine(context: Context) {
             } else {
                 @Suppress("DEPRECATION")
                 device.createCaptureSession(
-                    listOf(surface, imageReader!!.surface),
+                    listOf(surface, reader.surface),
                     sessionCallback,
                     cameraHandler,
                 )
             }
         } catch (error: CameraAccessException) {
-            fail(accessError("Unable to configure camera $cameraId", error))
+            failAndClose(accessError("Unable to configure camera $cameraId", error))
         } catch (error: IllegalArgumentException) {
-            fail(
+            failAndClose(
                 CameraError(
                     CameraErrorCode.INVALID_SURFACE,
                     "Preview or JPEG surface was rejected",
+                    error,
+                ),
+            )
+        } catch (error: IllegalStateException) {
+            failAndClose(
+                CameraError(
+                    CameraErrorCode.SESSION_CONFIGURATION_FAILED,
+                    "Camera $cameraId closed while configuring its session",
                     error,
                 ),
             )
@@ -463,15 +504,24 @@ internal class CameraEngine(context: Context) {
                 }
             }.build()
             session.setRepeatingRequest(request, null, cameraHandler)
+            cancelScheduledRetry(resetAttempts = true)
             transition(CameraEvent.PreviewStarted(cameraId))
             JcLog.info(LogCategory.CAMERA, "Preview started on camera $cameraId")
         } catch (error: CameraAccessException) {
-            fail(accessError("Unable to start camera $cameraId preview", error))
+            failAndClose(accessError("Unable to start camera $cameraId preview", error))
         } catch (error: IllegalStateException) {
-            fail(
+            failAndClose(
                 CameraError(
                     CameraErrorCode.SESSION_CONFIGURATION_FAILED,
                     "Preview session closed while starting",
+                    error,
+                ),
+            )
+        } catch (error: IllegalArgumentException) {
+            failAndClose(
+                CameraError(
+                    CameraErrorCode.INVALID_SURFACE,
+                    "Preview request was rejected",
                     error,
                 ),
             )
@@ -533,27 +583,18 @@ internal class CameraEngine(context: Context) {
     }
 
     private fun closeResources(emitClosed: Boolean) {
-        try {
-            captureSession?.stopRepeating()
-        } catch (error: CameraAccessException) {
-            JcLog.warn(LogCategory.CAMERA, "Unable to stop repeating preview", error)
-        } catch (error: IllegalStateException) {
-            JcLog.debug(LogCategory.CAMERA) { "Session already closed: ${error.message}" }
-        }
-        captureSession?.close()
-        captureSession = null
-        cameraDevice?.close()
-        cameraDevice = null
-        imageReader?.close()
-        imageReader = null
-        previewSurface?.release()
-        previewSurface = null
+        checkCameraThread()
+        cancelScheduledRetry(resetAttempts = true)
+        cameraCallbackGeneration++
+        sessionController.closeAll()
         _previewSize.value = null
-        if (emitClosed) transition(CameraEvent.Close)
+        if (emitClosed && _state.value != CameraState.Closed) transition(CameraEvent.Close)
     }
 
     private fun transition(event: CameraEvent) {
-        _state.value = CameraStateReducer.reduce(_state.value, event)
+        val current = _state.value
+        val next = CameraStateReducer.reduce(current, event)
+        if (next != current) _state.value = next
     }
 
     private fun captureFailed(message: String, cause: Throwable?) {
@@ -564,15 +605,74 @@ internal class CameraEngine(context: Context) {
         JcLog.error(LogCategory.CAPTURE, message, cause)
     }
 
-    private fun fail(error: CameraError) {
+    private fun failAndClose(error: CameraError) {
+        checkCameraThread()
+        cancelScheduledRetry(resetAttempts = false)
+        cameraCallbackGeneration++
+        sessionController.closeAll()
+        _previewSize.value = null
+        publishError(error)
+        scheduleRetry(error)
+    }
+
+    private fun publishError(error: CameraError) {
         transition(CameraEvent.Failed(error))
         JcLog.error(LogCategory.CAMERA, error.message, error.cause)
+    }
+
+    private fun scheduleRetry(error: CameraError) {
+        val decision = recoveryPolicy.decide(
+            error = error,
+            completedAttempts = completedRetryAttempts,
+            reopenPrerequisitesReady = canReopen(),
+        )
+        if (!decision.shouldRetry) return
+
+        completedRetryAttempts++
+        val expectedGeneration = cameraCallbackGeneration
+        val runnable = Runnable {
+            retryRunnable = null
+            if (expectedGeneration == cameraCallbackGeneration && canReopen()) {
+                openSelectedCameraIfReady()
+            }
+        }
+        retryRunnable = runnable
+        if (!cameraHandler.postDelayed(runnable, decision.delayMillis)) {
+            retryRunnable = null
+            JcLog.warn(LogCategory.CAMERA, "Camera retry could not be scheduled")
+        }
+    }
+
+    private fun cancelScheduledRetry(resetAttempts: Boolean) {
+        retryRunnable?.let(cameraHandler::removeCallbacks)
+        retryRunnable = null
+        if (resetAttempts) completedRetryAttempts = 0
+    }
+
+    private fun canReopen(): Boolean = running && cameraPermissionGranted &&
+        surfaceTexture != null && _selectedCamera.value != null
+
+    private fun isCurrentCallback(cameraId: String, callbackGeneration: Long): Boolean =
+        callbackGeneration == cameraCallbackGeneration &&
+            _selectedCamera.value?.cameraId == cameraId
+
+    private fun checkCameraThread() {
+        check(Looper.myLooper() === cameraThread.looper) {
+            "CameraEngine resource orchestration must run on the camera thread"
+        }
     }
 
     private fun accessError(message: String, cause: CameraAccessException) = CameraError(
         CameraErrorCode.ACCESS_FAILURE,
         "$message (reason=${cause.reason})",
         cause,
+        recoverable = cause.reason != CameraAccessException.CAMERA_DISABLED,
+    )
+
+    private fun deviceError(cameraId: String, error: Int) = CameraError(
+        CameraErrorCode.CAMERA_UNAVAILABLE,
+        "Camera $cameraId error: ${deviceErrorName(error)}",
+        recoverable = error != CameraDevice.StateCallback.ERROR_CAMERA_DISABLED,
     )
 
     private fun deviceErrorName(error: Int): String = when (error) {

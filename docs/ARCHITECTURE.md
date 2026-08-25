@@ -36,8 +36,9 @@ private-storage `.so`
 
 1. `ui` depends on application controllers and project-owned models only. It does not construct
    Camera2 requests or consume `CameraCharacteristics`.
-2. `camera/application` exposes a small lifecycle/intent facade. `camera/device` owns all
-   `CameraDevice` and `CameraCaptureSession` objects.
+2. `camera/application` exposes a small lifecycle/intent facade. `CameraEngine` remains the
+   orchestration/state owner, while the camera-thread-confined `CameraSessionController` is the
+   sole owner of `CameraDevice`, `CameraCaptureSession`, `ImageReader`, and preview `Surface`.
 3. `camera/capability` is the only mapping boundary from `CameraCharacteristics` to
    `CameraCapabilities`. Its mapper consumes a pure raw-value model so it can be tested on the JVM.
 4. `camera/capture` owns MediaStore persistence; capture callbacks never perform disk I/O.
@@ -54,6 +55,8 @@ Camera2 callbacks are reduced to the sealed `CameraState` domain model and expos
 `StateFlow`. JPEG work has a separate `CaptureStatus`, so persistence progress does not leak
 callback details. Expected failures use `CameraErrorCode` for permission, availability,
 disconnect, access, session, capture, storage, surface, and unsupported-capability cases.
+For device/session failures, `CameraState.Error` is published only after all owned Camera2
+resources have been closed; a recoverable Error is therefore also a valid source state for Open.
 
 ## Thread model
 
@@ -71,7 +74,16 @@ This separation keeps Camera2 callback latency independent from storage and futu
 
 ## Resource ownership
 
-`CameraEngine` has a single close path for capture session, device, `ImageReader`, and preview
-`Surface`. Activity `onStop` closes resources while preserving the available `SurfaceTexture` so
-`onStart` can reopen. Surface destruction closes camera resources before the texture is forgotten.
-Device disconnect and device/session errors go through the same close/error model.
+`CameraSessionController.closeAll()` is the one ownership boundary for capture session, device,
+`ImageReader`, and preview `Surface`. Every mutation checks that it runs on the camera looper.
+The TextureView-owned `SurfaceTexture` is never passed into that ownership boundary and is never
+released by camera recovery.
+
+Lifecycle close invalidates outstanding callback generations, cancels scheduled retries, closes
+owned resources, and emits `Closed` at most once. A device disconnect, fatal device callback,
+session configure failure, or preview startup failure uses `failAndClose`: invalidate stale
+callbacks, close everything, emit one `Error`, and schedule a bounded backoff retry when the error
+and current permission/surface/selection prerequisites allow it. Selected camera and
+`SurfaceTexture` survive this path, so retry creates fresh wrappers/resources without an Activity
+restart. Successful preview resets the retry budget. Explicit `onStop` and surface destruction do
+not retry.
