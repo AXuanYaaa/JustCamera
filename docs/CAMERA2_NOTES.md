@@ -18,8 +18,15 @@ camera does not discard successfully mapped cameras.
 - Preview sizes come from `SurfaceTexture` output sizes. Selection prefers the closest view aspect
   ratio and bounds normal preview work to 1080p when the HAL exposes such a choice.
 - The HAL buffer size is set before the `Surface` and capture session are created.
-- The transform center-crops the buffer for the display rotation. Front preview remains naturally
-  mirrored by `TextureView`; capture orientation is set independently.
+- `PreviewGeometry` explicitly combines buffer size, sensor orientation, display rotation, and
+  facing. `PreviewTransformCalculator` rotates into display orientation, mirrors front preview,
+  applies one uniform `CENTER_CROP` scale, and centers the result. Its source-to-viewport scale is
+  equal on both axes; `CameraPreview` only adapts that verified mapping to compensate for
+  TextureView's implicit buffer-to-view stretch.
+- Tap focus uses the inverse of the same transform, then center-crops the active-array/zoom region
+  to the preview stream aspect before creating metering rectangles. Display crop, sensor-stream
+  crop, and front-camera mirroring therefore cannot silently offset the metering region.
+- Capture orientation remains independent from preview display geometry.
 - A configuration change recreates the activity and closes/reopens Camera2. Background/foreground
   transitions close in `onStop` and reopen in `onStart` when permission and a surface are ready.
 

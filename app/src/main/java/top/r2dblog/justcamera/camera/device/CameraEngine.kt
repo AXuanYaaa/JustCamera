@@ -63,7 +63,11 @@ import top.r2dblog.justcamera.camera.raw.RawTopologyFallbackPolicy
 import top.r2dblog.justcamera.camera.session.CameraRecoveryPolicy
 import top.r2dblog.justcamera.camera.session.CameraSessionController
 import top.r2dblog.justcamera.camera.session.OrientationCalculator
+import top.r2dblog.justcamera.camera.session.PreviewGeometry
+import top.r2dblog.justcamera.camera.session.PreviewMeteringCropCalculator
 import top.r2dblog.justcamera.camera.session.PreviewSizeSelector
+import top.r2dblog.justcamera.camera.session.PreviewTransformCalculator
+import top.r2dblog.justcamera.camera.session.PreviewViewport
 import top.r2dblog.justcamera.hdr.capture.HdrBracketConstraints
 import top.r2dblog.justcamera.hdr.capture.HdrCapabilityAssessment
 import top.r2dblog.justcamera.hdr.capture.HdrCapabilityPolicy
@@ -266,18 +270,29 @@ internal class CameraEngine(context: Context) {
                 return@post
             }
             val activeArray = camera.activeArray ?: return@post
+            val bufferSize = _previewSize.value ?: return@post
+            if (surfaceWidth <= 0 || surfaceHeight <= 0) return@post
+            val bufferPoint = PreviewTransformCalculator.calculate(
+                geometry = PreviewGeometry(
+                    bufferSize = bufferSize,
+                    sensorOrientation = camera.sensorOrientation,
+                    displayRotationDegrees = displayRotationDegrees,
+                    cameraFacing = camera.facing,
+                ),
+                viewport = PreviewViewport(surfaceWidth, surfaceHeight),
+            ).mapNormalizedViewportToBuffer(normalizedX, normalizedY)
             val zoom = controller.requestedState.zoomRatio
             val crop = if (zoom >= 1f) ZoomCropCalculator.crop(activeArray, zoom) else activeArray
+            val visibleSensorCrop = PreviewMeteringCropCalculator.visibleSensorCrop(
+                sensorCrop = crop,
+                previewBuffer = bufferSize,
+            )
             val region = MeteringRegionMapper.map(
-                normalizedX = normalizedX,
-                normalizedY = normalizedY,
-                cropRegion = crop,
-                relativeRotationDegrees = OrientationCalculator.relativePreviewRotation(
-                    camera.sensorOrientation,
-                    displayRotationDegrees,
-                    camera.facing,
-                ),
-                mirrorHorizontally = camera.facing == CameraFacing.FRONT,
+                normalizedX = bufferPoint.x,
+                normalizedY = bufferPoint.y,
+                cropRegion = visibleSensorCrop,
+                relativeRotationDegrees = 0,
+                mirrorHorizontally = false,
             )
             val update = controller.update(controller.requestedState.copy(meteringRegion = region))
             if (update.accepted) {

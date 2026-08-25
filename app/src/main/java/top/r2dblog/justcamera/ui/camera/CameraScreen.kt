@@ -2,6 +2,7 @@ package top.r2dblog.justcamera.ui.camera
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,33 +11,42 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import top.r2dblog.justcamera.R
 import top.r2dblog.justcamera.camera.application.CameraController
 import top.r2dblog.justcamera.camera.model.CameraState
 import top.r2dblog.justcamera.camera.model.CaptureStatus
 import top.r2dblog.justcamera.hdr.capture.HdrMode
 import top.r2dblog.justcamera.hdr.capture.HdrStatus
-import top.r2dblog.justcamera.nativecore.NativeCore
+import top.r2dblog.justcamera.ui.theme.CameraColors
+import top.r2dblog.justcamera.ui.theme.CameraDimensions
+import top.r2dblog.justcamera.ui.theme.CameraShapes
+import top.r2dblog.justcamera.ui.theme.CameraSpacing
 
 @Composable
 fun CameraScreen(
@@ -44,8 +54,8 @@ fun CameraScreen(
     cameraPermissionGranted: Boolean,
     storagePermissionGranted: Boolean,
     requestPermissions: () -> Unit,
-    openCapabilities: () -> Unit,
     openFilters: () -> Unit,
+    openSettings: () -> Unit,
 ) {
     val state by cameraController.state.collectAsState()
     val captureStatus by cameraController.captureStatus.collectAsState()
@@ -54,64 +64,77 @@ fun CameraScreen(
     val previewSize by cameraController.previewSize.collectAsState()
     val controlState by cameraController.controlState.collectAsState()
     val controlCapabilities by cameraController.controlCapabilities.collectAsState()
-    val captureMetadata by cameraController.captureMetadata.collectAsState()
     val controlError by cameraController.controlError.collectAsState()
     val hdrMode by cameraController.hdrMode.collectAsState()
     val hdrCapability by cameraController.hdrCapability.collectAsState()
     val hdrStatus by cameraController.hdrStatus.collectAsState()
-    val nativeVersion = remember {
-        runCatching(NativeCore::version).getOrElse { "Native core unavailable" }
-    }
+    val captureEnabled = state is CameraState.Previewing &&
+        (storagePermissionGranted || hdrMode == HdrMode.ON) &&
+        captureStatus !is CaptureStatus.Capturing &&
+        captureStatus !is CaptureStatus.Saving && !hdrStatus.isBusy()
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    Box(modifier = Modifier.fillMaxSize().background(CameraColors.Background)) {
         if (cameraPermissionGranted) {
             CameraPreview(
                 cameraController = cameraController,
                 previewSize = previewSize,
+                sensorOrientation = selectedCamera?.sensorOrientation,
+                cameraFacing = selectedCamera?.facing,
                 modifier = Modifier.fillMaxSize(),
             )
         }
 
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .height(144.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Black.copy(alpha = 0.78f), Color.Transparent),
+                    ),
+                ),
+        )
         Row(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.55f))
                 .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(horizontal = CameraSpacing.Large, vertical = CameraSpacing.Medium),
             verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            Column {
+            HdrControl(
+                mode = hdrMode,
+                enabled = hdrMode == HdrMode.ON || hdrCapability?.captureEnabled == true,
+                onClick = {
+                    cameraController.setHdrMode(
+                        if (hdrMode == HdrMode.ON) HdrMode.OFF else HdrMode.ON,
+                    )
+                },
+            )
+            Surface(
+                color = CameraColors.ControlSurface,
+                shape = CameraShapes.Control,
+            ) {
                 Text(
-                    text = stateLabel(state),
-                    color = Color.White,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = selectedCamera?.let { "Camera ${it.cameraId} · ${it.hardwareLevel}" }
-                        ?: "Discovering cameras",
-                    color = Color.White.copy(alpha = 0.72f),
+                    stateLabel(state),
+                    color = CameraColors.PrimaryContent,
                     fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
+            Row(horizontalArrangement = Arrangement.spacedBy(CameraSpacing.Small)) {
+                CameraIconButton(
+                    icon = R.drawable.ic_filter,
+                    description = stringResource(R.string.open_filters),
                     onClick = openFilters,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White.copy(alpha = 0.16f),
-                    ),
-                ) {
-                    Text("FILTER", color = Color.White, fontWeight = FontWeight.Bold)
-                }
-                Button(
-                    onClick = openCapabilities,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White.copy(alpha = 0.16f),
-                    ),
-                ) {
-                    Text("CAP", color = Color.White, fontWeight = FontWeight.Bold)
-                }
+                )
+                CameraIconButton(
+                    icon = R.drawable.ic_settings,
+                    description = stringResource(R.string.open_settings),
+                    onClick = openSettings,
+                )
             }
         }
 
@@ -124,78 +147,136 @@ fun CameraScreen(
             )
         }
 
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(260.dp)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, Color.Black.copy(alpha = 0.92f)),
+                    ),
+                ),
+        )
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .background(Color.Black.copy(alpha = 0.68f))
                 .navigationBarsPadding()
-                .padding(horizontal = 24.dp, vertical = 18.dp),
+                .padding(
+                    start = CameraSpacing.Large,
+                    end = CameraSpacing.Large,
+                    bottom = CameraSpacing.Large,
+                ),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             ProControlPanel(
                 state = controlState,
                 capabilities = controlCapabilities,
-                metadata = captureMetadata,
                 controlError = controlError,
                 onStateChange = cameraController::updateControls,
             )
-            Spacer(Modifier.height(8.dp))
-            if (hdrMode == HdrMode.ON || hdrStatus is HdrStatus.Failed) {
-                HdrCaptureMessage(hdrStatus, hdrCapability?.reason)
+            Spacer(Modifier.height(CameraSpacing.Medium))
+            if (hdrMode == HdrMode.ON || hdrStatus !is HdrStatus.Idle) {
+                HdrCaptureMessage(hdrStatus)
             } else {
                 CaptureMessage(captureStatus)
-                hdrCapability?.let { capability ->
-                    Text(
-                        text = "HDR ${capability.level} · ${capability.reason}",
-                        color = Color.White.copy(alpha = 0.5f),
-                        fontSize = 10.sp,
-                    )
-                }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(CameraSpacing.Medium))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                CameraActionButton(
-                    text = if (hdrMode == HdrMode.ON) "HDR ON" else "HDR OFF",
-                    enabled = hdrMode == HdrMode.ON || hdrCapability?.captureEnabled == true,
-                    onClick = {
-                        cameraController.setHdrMode(
-                            if (hdrMode == HdrMode.ON) HdrMode.OFF else HdrMode.ON,
-                        )
-                    },
-                )
-                Button(
+                Spacer(Modifier.size(CameraDimensions.TouchTarget))
+                ShutterButton(
+                    enabled = captureEnabled,
+                    description = stringResource(R.string.take_photo),
                     onClick = cameraController::capture,
-                    enabled = state is CameraState.Previewing &&
-                        (storagePermissionGranted || hdrMode == HdrMode.ON) &&
-                        captureStatus !is CaptureStatus.Capturing &&
-                        captureStatus !is CaptureStatus.Saving && !hdrStatus.isBusy(),
-                    shape = CircleShape,
-                    contentPadding = ButtonDefaults.ContentPadding,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
-                    modifier = Modifier
-                        .size(76.dp)
-                        .border(4.dp, Color.White, CircleShape),
-                ) {
-                    Box(
-                        Modifier
-                            .size(54.dp)
-                            .background(Color.White, CircleShape),
-                    )
-                }
-                CameraActionButton(
-                    text = "SWITCH",
+                )
+                CameraIconButton(
+                    icon = R.drawable.ic_switch_camera,
+                    description = stringResource(R.string.switch_camera),
                     enabled = cameras.size > 1,
                     onClick = cameraController::switchCamera,
                 )
             }
-            Spacer(Modifier.height(8.dp))
-            Text(nativeVersion, color = Color.White.copy(alpha = 0.45f), fontSize = 10.sp)
         }
+    }
+}
+
+@Composable
+private fun HdrControl(mode: HdrMode, enabled: Boolean, onClick: () -> Unit) {
+    val selected = mode == HdrMode.ON
+    Surface(
+        color = if (selected) CameraColors.ControlSurfaceSelected else CameraColors.ControlSurface,
+        shape = CameraShapes.Control,
+        modifier = Modifier
+            .height(CameraDimensions.TouchTarget)
+            .alpha(if (enabled) 1f else 0.52f)
+            .clickable(enabled = enabled, onClick = onClick),
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                stringResource(R.string.hdr),
+                color = if (selected) Color.Black else Color.White,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+            )
+            Text(
+                stringResource(if (selected) R.string.on else R.string.off),
+                color = if (selected) Color.Black.copy(alpha = 0.72f) else {
+                    Color.White.copy(alpha = 0.72f)
+                },
+                fontSize = 9.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CameraIconButton(
+    icon: Int,
+    description: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+) {
+    Surface(
+        color = CameraColors.ControlSurface,
+        shape = CircleShape,
+        modifier = Modifier
+            .size(CameraDimensions.TouchTarget)
+            .alpha(if (enabled) 1f else 0.38f),
+    ) {
+        IconButton(onClick = onClick, enabled = enabled) {
+            Icon(
+                painter = painterResource(icon),
+                contentDescription = description,
+                tint = CameraColors.PrimaryContent,
+                modifier = Modifier.size(CameraDimensions.Icon),
+            )
+        }
+    }
+}
+
+@Composable
+private fun ShutterButton(enabled: Boolean, description: String, onClick: () -> Unit) {
+    IconButton(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = Modifier
+            .size(CameraDimensions.Shutter)
+            .semantics { contentDescription = description }
+            .border(4.dp, Color.White.copy(alpha = if (enabled) 1f else 0.45f), CircleShape),
+    ) {
+        Box(
+            Modifier
+                .size(CameraDimensions.ShutterInner)
+                .background(Color.White.copy(alpha = if (enabled) 1f else 0.38f), CircleShape),
+        )
     }
 }
 
@@ -208,92 +289,70 @@ private fun PermissionPanel(
 ) {
     Surface(
         modifier = modifier.padding(28.dp),
-        shape = RoundedCornerShape(20.dp),
+        shape = CameraShapes.Panel,
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
     ) {
         Column(
             modifier = Modifier.padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("Permission required", style = MaterialTheme.typography.titleLarge)
+            Text(stringResource(R.string.permission_required), style = MaterialTheme.typography.titleLarge)
             Spacer(Modifier.height(8.dp))
             Text(
-                when {
-                    cameraMissing && storageMissing ->
-                        "Camera access and photo storage access are required on this device."
-                    cameraMissing -> "Camera access is required for preview and capture."
-                    else -> "Photo storage access is required on Android 8–9."
-                },
+                stringResource(
+                    when {
+                        cameraMissing && storageMissing -> R.string.permission_camera_storage
+                        cameraMissing -> R.string.permission_camera
+                        else -> R.string.permission_storage
+                    },
+                ),
                 style = MaterialTheme.typography.bodyMedium,
             )
             Spacer(Modifier.height(18.dp))
-            Button(onClick = requestPermissions) { Text("Grant access") }
+            Button(onClick = requestPermissions) { Text(stringResource(R.string.grant_access)) }
         }
-    }
-}
-
-@Composable
-private fun CameraActionButton(text: String, enabled: Boolean, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        enabled = enabled,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = Color.White.copy(alpha = 0.14f),
-            disabledContainerColor = Color.White.copy(alpha = 0.06f),
-        ),
-    ) {
-        Text(text, fontSize = 11.sp, color = Color.White)
     }
 }
 
 @Composable
 private fun CaptureMessage(status: CaptureStatus) {
-    val message = when (status) {
-        CaptureStatus.Idle -> "Ready · MediaStore"
-        is CaptureStatus.Capturing -> "Capturing ${status.mode}…"
-        is CaptureStatus.Saving -> "Saving ${status.pending.joinToString()}…"
-        is CaptureStatus.Saved -> "Saved ${status.outputs.joinToString { it.displayName }}"
-        is CaptureStatus.PartialSuccess ->
-            "Partial · saved ${status.outputs.joinToString { it.type.name }}; " +
-                "failed ${status.failures.joinToString { it.type.name }}"
-        is CaptureStatus.Failed -> status.error.message
-    }
-    val color = if (status is CaptureStatus.Failed || status is CaptureStatus.PartialSuccess) {
-        MaterialTheme.colorScheme.error
-    } else {
-        Color.White.copy(alpha = 0.78f)
-    }
-    Text(message, color = color, fontSize = 12.sp)
+    val message = stringResource(
+        when (status) {
+            CaptureStatus.Idle -> R.string.capture_ready
+            is CaptureStatus.Capturing -> R.string.capture_capturing
+            is CaptureStatus.Saving -> R.string.capture_saving
+            is CaptureStatus.Saved -> R.string.capture_saved
+            is CaptureStatus.PartialSuccess -> R.string.capture_partial
+            is CaptureStatus.Failed -> R.string.capture_failed
+        },
+    )
+    Text(
+        message,
+        color = if (status is CaptureStatus.Failed || status is CaptureStatus.PartialSuccess) {
+            MaterialTheme.colorScheme.error
+        } else CameraColors.SecondaryContent,
+        fontSize = 12.sp,
+    )
 }
 
 @Composable
-private fun HdrCaptureMessage(status: HdrStatus, capabilityReason: String?) {
-    val message = when (status) {
-        HdrStatus.Idle -> "HDR ready · 3-frame YUV bracket"
-        HdrStatus.Planning -> "Planning HDR exposure bracket…"
-        is HdrStatus.Capturing ->
-            "HDR capture ${status.capturedFrames}/${status.totalFrames}…"
-        is HdrStatus.Converting -> "Converting ${status.frameCount} YUV frames…"
-        HdrStatus.Aligning -> "Aligning HDR bracket…"
-        HdrStatus.Merging -> "Merging scene-linear HDR…"
-        HdrStatus.ToneMapping -> "Tone mapping HDR…"
-        is HdrStatus.Completed -> "HDR ready ${status.width}×${status.height}"
-        is HdrStatus.Failed -> if (status.fallbackToStandard) {
-            "${status.reason} · standard mode restored"
-        } else {
-            status.reason
-        }
-        HdrStatus.Cancelled -> "HDR capture cancelled"
-    }
-    val resolved = if (status is HdrStatus.Idle && capabilityReason != null) {
-        "$message · $capabilityReason"
-    } else {
-        message
-    }
+private fun HdrCaptureMessage(status: HdrStatus) {
+    val message = stringResource(
+        when (status) {
+            HdrStatus.Idle -> R.string.hdr_on
+            HdrStatus.Planning, is HdrStatus.Capturing -> R.string.hdr_capturing
+            is HdrStatus.Converting, HdrStatus.Aligning, HdrStatus.Merging,
+            HdrStatus.ToneMapping,
+            -> R.string.hdr_processing
+            is HdrStatus.Completed -> R.string.hdr_completed
+            is HdrStatus.Failed -> R.string.hdr_failed
+            HdrStatus.Cancelled -> R.string.hdr_cancelled
+        },
+    )
     Text(
-        text = resolved,
+        message,
         color = if (status is HdrStatus.Failed) MaterialTheme.colorScheme.error else {
-            Color.White.copy(alpha = 0.78f)
+            CameraColors.SecondaryContent
         },
         fontSize = 12.sp,
     )
@@ -310,13 +369,15 @@ private fun HdrStatus.isBusy(): Boolean = when (this) {
     else -> false
 }
 
-private fun stateLabel(state: CameraState): String = when (state) {
-    CameraState.PermissionRequired -> "Permission required"
-    CameraState.Closed -> "Camera closed"
-    is CameraState.Opening -> "Opening camera"
-    is CameraState.Opened -> "Camera opened"
-    is CameraState.Configuring -> "Configuring preview"
-    is CameraState.Previewing -> "Ready"
-    is CameraState.Capturing -> "Capturing"
-    is CameraState.Error -> "Error · ${state.error.message}"
-}
+@Composable
+private fun stateLabel(state: CameraState): String = stringResource(
+    when (state) {
+        CameraState.PermissionRequired -> R.string.camera_status_permission
+        CameraState.Closed -> R.string.camera_status_closed
+        is CameraState.Opening, is CameraState.Opened -> R.string.camera_status_opening
+        is CameraState.Configuring -> R.string.camera_status_configuring
+        is CameraState.Previewing -> R.string.camera_status_ready
+        is CameraState.Capturing -> R.string.camera_status_capturing
+        is CameraState.Error -> R.string.camera_status_error
+    },
+)

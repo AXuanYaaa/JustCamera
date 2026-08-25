@@ -1,23 +1,28 @@
 package top.r2dblog.justcamera.ui.camera
 
 import android.graphics.Matrix
-import android.graphics.RectF
 import android.graphics.SurfaceTexture
 import android.view.Surface
 import android.view.TextureView
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.foundation.gestures.detectTapGestures
 import top.r2dblog.justcamera.camera.application.CameraController
+import top.r2dblog.justcamera.camera.model.CameraFacing
 import top.r2dblog.justcamera.camera.model.ImageSize
-import kotlin.math.max
+import top.r2dblog.justcamera.camera.session.PreviewGeometry
+import top.r2dblog.justcamera.camera.session.PreviewPoint
+import top.r2dblog.justcamera.camera.session.PreviewTransformCalculator
+import top.r2dblog.justcamera.camera.session.PreviewViewport
 
 @Composable
 fun CameraPreview(
     cameraController: CameraController,
     previewSize: ImageSize?,
+    sensorOrientation: Int?,
+    cameraFacing: CameraFacing?,
     modifier: Modifier = Modifier,
 ) {
     AndroidView(
@@ -57,7 +62,12 @@ fun CameraPreview(
                             height,
                             displayRotationDegrees(display?.rotation ?: Surface.ROTATION_0),
                         )
-                        previewSize?.let { configureTransform(this@apply, it) }
+                        configureTransform(
+                            view = this@apply,
+                            buffer = previewSize,
+                            sensorOrientation = sensorOrientation,
+                            facing = cameraFacing,
+                        )
                     }
 
                     override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
@@ -76,7 +86,7 @@ fun CameraPreview(
                     view.height,
                     displayRotationDegrees(view.display?.rotation ?: Surface.ROTATION_0),
                 )
-                previewSize?.let { configureTransform(view, it) }
+                configureTransform(view, previewSize, sensorOrientation, cameraFacing)
             }
         },
     )
@@ -89,30 +99,41 @@ private fun displayRotationDegrees(rotation: Int): Int = when (rotation) {
     else -> 0
 }
 
-private fun configureTransform(view: TextureView, buffer: ImageSize) {
-    if (view.width == 0 || view.height == 0) return
-    val rotation = view.display?.rotation ?: Surface.ROTATION_0
-    val viewRect = RectF(0f, 0f, view.width.toFloat(), view.height.toFloat())
-    val rotated = rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270
-    val bufferWidth = if (rotated) buffer.height.toFloat() else buffer.width.toFloat()
-    val bufferHeight = if (rotated) buffer.width.toFloat() else buffer.height.toFloat()
-    val bufferRect = RectF(0f, 0f, bufferWidth, bufferHeight)
-    val centerX = viewRect.centerX()
-    val centerY = viewRect.centerY()
-    bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
+private fun configureTransform(
+    view: TextureView,
+    buffer: ImageSize?,
+    sensorOrientation: Int?,
+    facing: CameraFacing?,
+) {
+    if (view.width == 0 || view.height == 0 || buffer == null ||
+        sensorOrientation == null || facing == null
+    ) return
+    val transform = PreviewTransformCalculator.calculate(
+        geometry = PreviewGeometry(
+            bufferSize = buffer,
+            sensorOrientation = sensorOrientation,
+            displayRotationDegrees = displayRotationDegrees(
+                view.display?.rotation ?: Surface.ROTATION_0,
+            ),
+            cameraFacing = facing,
+        ),
+        viewport = PreviewViewport(view.width, view.height),
+    )
 
-    val matrix = Matrix().apply {
-        setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
-        val scale = max(
-            view.height.toFloat() / bufferHeight,
-            view.width.toFloat() / bufferWidth,
-        )
-        postScale(scale, scale, centerX, centerY)
-        when (rotation) {
-            Surface.ROTATION_90 -> postRotate(-90f, centerX, centerY)
-            Surface.ROTATION_180 -> postRotate(180f, centerX, centerY)
-            Surface.ROTATION_270 -> postRotate(90f, centerX, centerY)
-        }
-    }
-    view.setTransform(matrix)
+    // TextureView first stretches its producer buffer to view bounds. Map those implicit view
+    // coordinates back onto the verified, uniform buffer-to-viewport transform using 3 points.
+    val source = floatArrayOf(
+        0f, 0f,
+        view.width.toFloat(), 0f,
+        0f, view.height.toFloat(),
+    )
+    val topLeft = transform.mapBufferToViewport(PreviewPoint(0f, 0f))
+    val topRight = transform.mapBufferToViewport(PreviewPoint(buffer.width.toFloat(), 0f))
+    val bottomLeft = transform.mapBufferToViewport(PreviewPoint(0f, buffer.height.toFloat()))
+    val destination = floatArrayOf(
+        topLeft.x, topLeft.y,
+        topRight.x, topRight.y,
+        bottomLeft.x, bottomLeft.y,
+    )
+    view.setTransform(Matrix().apply { setPolyToPoly(source, 0, destination, 0, 3) })
 }

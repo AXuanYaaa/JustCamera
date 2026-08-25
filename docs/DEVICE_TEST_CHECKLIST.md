@@ -1,7 +1,8 @@
 # JustCamera Physical-Device Validation Checklist
 
-Use this checklist with the local-only `JustCamera-ph5-device-test.apk`. It is signed for testing,
-not production distribution. Record logs, output files, and exact reproduction steps for failures.
+Use this checklist with the debug APK or a separately signed PH5.2 validation APK. Validation
+artifacts and signing keys remain local and must not be committed. Record logs, output files, and
+exact reproduction steps for failures.
 
 ## Device record
 
@@ -47,6 +48,33 @@ not production distribution. Record logs, output files, and exact reproduction s
 - [ ] Capture status returns to ready and preview remains usable.
 - [ ] Exercise low-storage/storage-denial handling where it can be done safely.
 
+## C.1 PH5.2 preview geometry
+
+- [ ] Rear-camera preview has no stretching or squashing on a tall/narrow phone.
+- [ ] Circular objects remain circular and faces retain natural proportions.
+- [ ] Preview orientation is correct for rear and front cameras.
+- [ ] Front-camera preview mirroring is natural and captured JPEG orientation remains correct.
+- [ ] Portrait and landscape preview remain aspect-correct where rotation is supported.
+- [ ] Center crop fills the preview; overflow is symmetric rather than aligned to one edge.
+- [ ] Tap focus lands at the tapped position at center, edges, and corners.
+- [ ] Repeat tap focus with front/rear camera, 0/90/180/270 display rotations, and zoom.
+
+## C.2 PH5.2 language and camera UI
+
+- [ ] Clean install starts in Simplified Chinese even when the system language is English.
+- [ ] 设置 → 语言 → English switches the whole application to English.
+- [ ] Restart preserves English.
+- [ ] Settings → Language → 简体中文 switches back and restart preserves Chinese.
+- [ ] Top controls, status, permissions, pro controls, Filters, Settings, and Developer information
+      have no unintended mixed-language labels.
+- [ ] Controls do not overlap status bars, navigation bars, or a display cutout.
+- [ ] Controls remain readable over both bright and dark scenes.
+- [ ] No localized text is clipped on narrow screens or in landscape.
+- [ ] Shutter is reachable one-handed and provides clear enabled/disabled feedback.
+- [ ] Pro controls start collapsed; tapping ISO/S/EV/Focus/WB opens only that adjustment and
+      tapping it again collapses the adjustment.
+- [ ] Tall/narrow 19.5:9 and 20:9 layouts retain an unobstructed, aspect-correct preview.
+
 ## D. Professional controls
 
 - [ ] ISO changes are accepted within the device range and observed metadata changes.
@@ -82,14 +110,16 @@ not production distribution. Record logs, output files, and exact reproduction s
 - [ ] Repeat HDR at least 10 times without overlap, unbounded memory growth, or a stuck state.
 - [ ] Background immediately after HDR capture; no stale result publishes and no crash occurs.
 - [ ] Disable HDR and confirm standard JPEG/RAW topology and capture still work.
-- [ ] If HDR topology is rejected, the reason is visible and standard capture recovers.
+- [ ] If HDR topology is rejected, the concise main status is usable, the detailed reason is under
+      Settings → Developer information, and standard capture recovers.
 
 ## G. Filter engine and native diagnostics
 
 - [ ] Filter screen opens and returns to camera without lifecycle problems.
 - [ ] Built-in filter selection and parameter adjustment remain responsive.
 - [ ] LUT behavior works where currently exposed; invalid LUT input fails safely.
-- [ ] Native core version/ABI diagnostics appear and match the installed device ABI.
+- [ ] Native core version/ABI diagnostics appear under Settings → Developer information and match
+      the installed device ABI.
 - [ ] Diagnostics do not claim an active SIMD kernel when only scalar kernels are active.
 
 ## H. Stress pass

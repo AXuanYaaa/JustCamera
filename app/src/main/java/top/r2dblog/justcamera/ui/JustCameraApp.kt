@@ -9,8 +9,10 @@ import top.r2dblog.justcamera.camera.application.CameraController
 import top.r2dblog.justcamera.ui.camera.CameraScreen
 import top.r2dblog.justcamera.ui.capability.CapabilityScreen
 import top.r2dblog.justcamera.ui.filter.FilterScreen
+import top.r2dblog.justcamera.settings.AppLanguage
+import top.r2dblog.justcamera.ui.settings.SettingsScreen
 
-private enum class AppDestination { CAMERA, CAPABILITIES, FILTERS }
+private enum class AppDestination { CAMERA, CAPABILITIES, FILTERS, SETTINGS }
 
 @Composable
 fun JustCameraApp(
@@ -18,6 +20,8 @@ fun JustCameraApp(
     cameraPermissionGranted: Boolean,
     storagePermissionGranted: Boolean,
     requestPermissions: () -> Unit,
+    selectedLanguage: AppLanguage,
+    selectLanguage: (AppLanguage) -> Unit,
 ) {
     var destination by remember { mutableStateOf(AppDestination.CAMERA) }
     when (destination) {
@@ -26,13 +30,19 @@ fun JustCameraApp(
             cameraPermissionGranted = cameraPermissionGranted,
             storagePermissionGranted = storagePermissionGranted,
             requestPermissions = requestPermissions,
-            openCapabilities = { destination = AppDestination.CAPABILITIES },
             openFilters = { destination = AppDestination.FILTERS },
+            openSettings = { destination = AppDestination.SETTINGS },
         )
         AppDestination.CAPABILITIES -> CapabilityScreen(
             cameraController = cameraController,
-            onBack = { destination = AppDestination.CAMERA },
+            onBack = { destination = AppDestination.SETTINGS },
         )
         AppDestination.FILTERS -> FilterScreen(onBack = { destination = AppDestination.CAMERA })
+        AppDestination.SETTINGS -> SettingsScreen(
+            selectedLanguage = selectedLanguage,
+            onLanguageSelected = selectLanguage,
+            onOpenDeveloperInfo = { destination = AppDestination.CAPABILITIES },
+            onBack = { destination = AppDestination.CAMERA },
+        )
     }
 }
